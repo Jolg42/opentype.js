@@ -1,5 +1,5 @@
-// The `GPOS` table contains kerning pairs, among other things.
-// https://www.microsoft.com/typography/OTSPEC/gpos.htm
+// The `GSUB` table contains ligatures, among other things.
+// https://www.microsoft.com/typography/OTSPEC/gsub.htm
 
 'use strict';
 
@@ -241,9 +241,7 @@ function parseFeatureTable(data, start) {
 }
 
 
-
-// Parse the `GPOS` table which contains, among other things, kerning pairs.
-// https://www.microsoft.com/typography/OTSPEC/gpos.htm
+// https://www.microsoft.com/typography/OTSPEC/gsub.htm
 function parseGsubTable(data, start, font) {
     var p = new parse.Parser(data, start);
     var tableVersion = p.parseFixed();
