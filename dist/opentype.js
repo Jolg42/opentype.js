@@ -4324,7 +4324,8 @@ function parseLookupTable(data, start) {
 // https://www.microsoft.com/typography/OTSPEC/chapter2.htm
 function parseLangSysTable(data, start) {
     var p = new parse.Parser(data, start);
-    p.parseUShort();                        // LookupOrder = NULL (reserved for an offset to a reordering table)
+    var lookupOrder = p.parseUShort();                        // LookupOrder = NULL (reserved for an offset to a reordering table)
+    check.argument(lookupOrder === 0, 'GSUB lookup order must be NULL.');
     var reqFeatureIndex = p.parseUShort();  // if no required features = 0xFFFF
     if (reqFeatureIndex === 0xffff) {
         reqFeatureIndex = undefined;
@@ -4345,7 +4346,7 @@ function parseScriptTable(data, start) {
     var langSys = {};
     var defaultLangSysOffset = p.parseUShort();     // may be NULL
     if (defaultLangSysOffset) {
-        langSys.default = parseLangSysTable(data, start + defaultLangSysOffset);
+        langSys.dflt = parseLangSysTable(data, start + defaultLangSysOffset);
     }
     var langSysCount = p.parseUShort();
     for (var i = 0; i < langSysCount; i++) {
@@ -4376,31 +4377,45 @@ function parseFeatureTable(data, start) {
 // Parse the `GPOS` table which contains, among other things, kerning pairs.
 // https://www.microsoft.com/typography/OTSPEC/gpos.htm
 function parseGsubTable(data, start, font) {
-    console.log('GSUB at',start.toString(16));
     var p = new parse.Parser(data, start);
     var tableVersion = p.parseFixed();
     check.argument(tableVersion === 1, 'Unsupported GSUB table version.');
 
     // ScriptList and FeatureList - ignored for now
-    console.log('SCRIPT LIST');
     var scriptList = parseTagListTable(data, start + p.parseUShort(), parseScriptTable);
-    console.log(scriptList);    
-    
-    // 'kern' is the feature we are looking for.
-    console.log('FEATURE LIST');
     var featureList = parseTagListTable(data, start + p.parseUShort(), parseFeatureTable);
-    console.log(featureList);
 
-    console.log('LOOKUP LIST');
+    // Use script DFLT - langSys deflt
+    var i, defaultFeatures, defaultLookups;
+    for (i = 0; i < scriptList.length; i++) {
+        if (scriptList[i].name === 'DFLT') {
+            defaultFeatures = scriptList[i].list.dflt;
+        }
+    }
+    if (defaultFeatures) {
+        // defaultFeatures.reqFeatureIndex is ignored
+        defaultLookups = [];
+        var ft = defaultFeatures.features;
+        for (i = 0; i < ft.length; i++) {
+            defaultLookups = defaultLookups.concat(featureList[ft[i]].list);
+        }
+        defaultLookups.sort(function(a, b) { return a - b; });
+    }
+    check.argument(!!defaultLookups, 'GSUB: defaults not found.');
+
     // LookupList
+    console.log('LOOKUP LIST');
     var lookupListOffset = p.parseUShort();
     p.relativeOffset = lookupListOffset;
     var lookupCount = p.parseUShort();
     var lookupTableOffsets = p.parseOffset16List(lookupCount);
     var lookupListAbsoluteOffset = start + lookupListOffset;
-    for (var i = 0; i < lookupCount; i++) {
-        var table = parseLookupTable(data, lookupListAbsoluteOffset + lookupTableOffsets[i]);
-        if (table.lookupType === 2 && !font.getGposKerningValue) font.getGposKerningValue = table.getKerningValue;
+
+    for (i = 0; i < defaultLookups.length; i++) {
+        var lookupListIndex = defaultLookups[i];
+        var table = parseLookupTable(data, lookupListAbsoluteOffset + lookupTableOffsets[lookupListIndex]);
+        console.log(lookupListIndex, table);
+        //if (table.lookupType === 2 && !font.getGposKerningValue) font.getGposKerningValue = table.getKerningValue;
     }
 }
 
