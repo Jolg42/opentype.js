@@ -4102,8 +4102,8 @@ function parseGposTable(data, start, font) {
 exports.parse = parseGposTable;
 
 },{"../check":2,"../parse":9}],17:[function(require,module,exports){
-// The `GPOS` table contains kerning pairs, among other things.
-// https://www.microsoft.com/typography/OTSPEC/gpos.htm
+// The `GSUB` table contains ligatures, among other things.
+// https://www.microsoft.com/typography/OTSPEC/gsub.htm
 
 'use strict';
 
@@ -4197,94 +4197,85 @@ function parseClassDefTable(data, start) {
     }
 }
 
-// Parse a pair adjustment positioning subtable, format 1 or format 2
+// Parse substitution subtable, format 1 or format 2
 // The subtable is returned in the form of a lookup function.
-function parsePairPosSubTable(data, start) {
+function parseSubstitutionSubTable(data, start) {
     var p = new parse.Parser(data, start);
     // This part is common to format 1 and format 2 subtables
     var format = p.parseUShort();
     var coverageOffset = p.parseUShort();
     var coverage = parseCoverageTable(data, start + coverageOffset);
-    // valueFormat 4: XAdvance only, 1: XPlacement only, 0: no ValueRecord for second glyph
-    // Only valueFormat1=4 and valueFormat2=0 is supported.
-    var valueFormat1 = p.parseUShort();
-    var valueFormat2 = p.parseUShort();
-    var value1;
-    var value2;
-    if (valueFormat1 !== 4 || valueFormat2 !== 0) return;
-    var sharedPairSets = {};
+
     if (format === 1) {
-        // Pair Positioning Adjustment: Format 1
-        var pairSetCount = p.parseUShort();
-        var pairSet = [];
-        // Array of offsets to PairSet tables-from beginning of PairPos subtable-ordered by Coverage Index
-        var pairSetOffsets = p.parseOffset16List(pairSetCount);
-        for (var firstGlyph = 0; firstGlyph < pairSetCount; firstGlyph++) {
-            var pairSetOffset = pairSetOffsets[firstGlyph];
-            var sharedPairSet = sharedPairSets[pairSetOffset];
-            if (!sharedPairSet) {
-                // Parse a pairset table in a pair adjustment subtable format 1
-                sharedPairSet = {};
-                p.relativeOffset = pairSetOffset;
-                var pairValueCount = p.parseUShort();
-                for (; pairValueCount--;) {
-                    var secondGlyph = p.parseUShort();
-                    if (valueFormat1) value1 = p.parseShort();
-                    if (valueFormat2) value2 = p.parseShort();
-                    // We only support valueFormat1 = 4 and valueFormat2 = 0,
-                    // so value1 is the XAdvance and value2 is empty.
-                    sharedPairSet[secondGlyph] = value1;
-                }
-            }
+        console.log({"format": format});
+        console.log({"coverage": coverage});
 
-            pairSet[coverage[firstGlyph]] = sharedPairSet;
+        /*
+         SingleSubstFormat1 subtable: Calculated output glyph indices
+
+         Type	Name	        Description
+         uint16	SubstFormat	    Format identifier-format = 1
+         Offset	Coverage	    Offset to Coverage table-from beginning of Substitution table
+         int16	DeltaGlyphID	Add to original GlyphID to get substitute GlyphID
+         */
+
+        //DeltaGlyphID is the constant value added to each input glyph index to calculate the index of the corresponding output glyph.
+        var DeltaGlyphID = p.parseUShort();
+
+        var glyphsIDs = [];
+
+        for (var i = 0; i < coverage.length; i++) {
+            var originalGlyphID = coverage[i];
+            var substituteGlyphID = originalGlyphID + DeltaGlyphID;
+
+//            console.log({"originalGlyphID": originalGlyphID.toString(16)});
+//            console.log({"substituteGlyphID": substituteGlyphID.toString(16)});
+
+            glyphsIDs.push(substituteGlyphID);
         }
 
-        return function(leftGlyph, rightGlyph) {
-            var pairs = pairSet[leftGlyph];
-            if (pairs) return pairs[rightGlyph];
-        };
+//        console.log({"DeltaGlyphID": DeltaGlyphID});
+//        console.log({"glyphsIDs": glyphsIDs});
+
+        return glyphsIDs;
     }
-    else if (format === 2) {
-        // Pair Positioning Adjustment: Format 2
-        var classDef1Offset = p.parseUShort();
-        var classDef2Offset = p.parseUShort();
-        var class1Count = p.parseUShort();
-        var class2Count = p.parseUShort();
-        var getClass1 = parseClassDefTable(data, start + classDef1Offset);
-        var getClass2 = parseClassDefTable(data, start + classDef2Offset);
 
-        // Parse kerning values by class pair.
-        var kerningMatrix = [];
-        for (var i = 0; i < class1Count; i++) {
-            var kerningRow = kerningMatrix[i] = [];
-            for (var j = 0; j < class2Count; j++) {
-                if (valueFormat1) value1 = p.parseShort();
-                if (valueFormat2) value2 = p.parseShort();
-                // We only support valueFormat1 = 4 and valueFormat2 = 0,
-                // so value1 is the XAdvance and value2 is empty.
-                kerningRow[j] = value1;
-            }
-        }
-
-        // Convert coverage list to a hash
-        var covered = {};
-        for (i = 0; i < coverage.length; i++) covered[coverage[i]] = 1;
-
-        // Get the kerning value for a specific glyph pair.
-        return function(leftGlyph, rightGlyph) {
-            if (!covered[leftGlyph]) return;
-            var class1 = getClass1(leftGlyph);
-            var class2 = getClass2(rightGlyph);
-            var kerningRow = kerningMatrix[class1];
-
-            if (kerningRow) {
-                return kerningRow[class2];
-            }
-        };
-    }
 }
 
+function parseLigatureSetTable(data, start) {
+    var p = new parse.Parser(data, start);
+    var ligatureCount = p.parseUShort();
+    var t = [];
+    for (var i = 0; i < ligatureCount; i++) {
+        var ligatureOffset = start + p.parseUShort();
+        var ligGlyph = p.parseUShort();
+        var compCount = p.parseUShort() - 1;        // The first component is taken from the coverage table.
+        var components = new Array(compCount);
+        for (var j = 0; j < compCount; j++) {
+            components[j] = p.parseUShort();
+        }
+        t.push({ glyph: ligGlyph, components: components });
+    }
+    return t;
+}
+
+function parseLigatureSubTable(data, start) {
+    var p = new parse.Parser(data, start);
+    var substFormat = p.parseUShort();
+    check.argument(substFormat === 1, 'GSUB ligature table format identifier-format must be 1');
+    var coverageOffset = p.parseUShort();
+    var coverage = parseCoverageTable(data, start + coverageOffset);
+console.log(coverage);
+    var ligSetCount = p.parseUShort();
+    var lig = new Array(ligSetCount);
+    for (var i = 0; i < ligSetCount; i++) {
+        var ligSet = lig[i] = new Array(coverage.length);
+        for (var j = 0; j < coverage.length; j++) {
+            ligSet[j] = parseLigatureSetTable(data, start + p.parseUShort());
+        }
+    }
+console.log(lig);
+}
 
 // Parse a LookupTable (present in of GPOS, GSUB, GDEF, BASE, JSTF tables).
 function parseLookupTable(data, start) {
@@ -4299,21 +4290,39 @@ function parseLookupTable(data, start) {
         lookupFlag: lookupFlag,
         markFilteringSet: useMarkFilteringSet ? p.parseUShort() : -1
     };
-    // LookupType 2, Pair adjustment
-    if (lookupType === 2) {
+
+    /*
+     LookupType Enumeration table for glyph substitution
+     Value	Type	Description
+     1	Single (format 1.1 1.2)	Replace one glyph with one glyph
+     2	Multiple (format 2.1)	Replace one glyph with more than one glyph
+     3	Alternate (format 3.1)	Replace one glyph with one of many glyphs
+     4	Ligature (format 4.1)	Replace multiple glyphs with one glyph
+     5	Context (format 5.1 5.2 5.3)	Replace one or more glyphs in context
+     6	Chaining Context (format 6.1 6.2 6.3)	Replace one or more glyphs in chained context
+     7	Extension Substitution (format 7.1)	Extension mechanism for other substitutions (i.e. this excludes the Extension type substitution itself)
+     8	Reverse chaining context single (format 8.1)	Applied in reverse order, replace single glyph in chaining context
+     9+	Reserved	For future use (set to zero)
+     */
+
+    console.log({"lookupType": lookupType});
+
+    // Single (format 1.1 1.2)	Replace one glyph with one glyph
+    if (lookupType === 1) {
+
         var subtables = [];
         for (var i = 0; i < subTableCount; i++) {
-            subtables.push(parsePairPosSubTable(data, start + subTableOffsets[i]));
+            subtables.push(parseSubstitutionSubTable(data, start + subTableOffsets[i]));
         }
-        // Return a function which finds the kerning values in the subtables.
-        table.getKerningValue = function(leftGlyph, rightGlyph) {
-            for (var i = subtables.length; i--;) {
-                var value = subtables[i](leftGlyph, rightGlyph);
-                if (value !== undefined) return value;
-            }
 
-            return 0;
-        };
+    }
+    // Ligature (format 4.1)	Replace multiple glyphs with one glyph
+    else if(lookupType === 4) {
+        var subtables = [];
+        for (var i = 0; i < subTableCount; i++) {
+            subtables.push(parseLigatureSubTable(data, start + subTableOffsets[i]));
+        }
+        console.log('TODO finir la 4', subTableCount);
     }
 
     return table;
@@ -4373,9 +4382,7 @@ function parseFeatureTable(data, start) {
 }
 
 
-
-// Parse the `GPOS` table which contains, among other things, kerning pairs.
-// https://www.microsoft.com/typography/OTSPEC/gpos.htm
+// https://www.microsoft.com/typography/OTSPEC/gsub.htm
 function parseGsubTable(data, start, font) {
     var p = new parse.Parser(data, start);
     var tableVersion = p.parseFixed();
@@ -4414,7 +4421,7 @@ function parseGsubTable(data, start, font) {
     for (i = 0; i < defaultLookups.length; i++) {
         var lookupListIndex = defaultLookups[i];
         var table = parseLookupTable(data, lookupListAbsoluteOffset + lookupTableOffsets[lookupListIndex]);
-        console.log(lookupListIndex, table);
+        // TODO alimenter l'objet font
         //if (table.lookupType === 2 && !font.getGposKerningValue) font.getGposKerningValue = table.getKerningValue;
     }
 }

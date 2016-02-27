@@ -103,8 +103,8 @@ function parseSubstitutionSubTable(data, start) {
     var coverage = parseCoverageTable(data, start + coverageOffset);
 
     if (format === 1) {
-        console.log({"format": format});
-        console.log({"coverage": coverage});
+        console.log({format: format});
+        console.log({coverage: coverage});
 
         /*
          SingleSubstFormat1 subtable: Calculated output glyph indices
@@ -124,20 +124,55 @@ function parseSubstitutionSubTable(data, start) {
             var originalGlyphID = coverage[i];
             var substituteGlyphID = originalGlyphID + DeltaGlyphID;
 
-            console.log({"originalGlyphID": originalGlyphID.toString(16)});
-            console.log({"substituteGlyphID": substituteGlyphID.toString(16)});
+//            console.log({"originalGlyphID": originalGlyphID.toString(16)});
+//            console.log({"substituteGlyphID": substituteGlyphID.toString(16)});
 
             glyphsIDs.push(substituteGlyphID);
         }
 
-        console.log({"DeltaGlyphID": DeltaGlyphID});
-        console.log({"glyphsIDs": glyphsIDs});
+//        console.log({"DeltaGlyphID": DeltaGlyphID});
+//        console.log({"glyphsIDs": glyphsIDs});
 
         return glyphsIDs;
     }
 
 }
 
+function parseLigatureSetTable(data, start) {
+    var p = new parse.Parser(data, start);
+    var ligatureCount = p.parseUShort();
+    var t = [];
+    for (var i = 0; i < ligatureCount; i++) {
+        var ligatureOffset = start + p.parseUShort();
+        // TODO GROS BUG utiliser ligatureOffset !
+        var ligGlyph = p.parseUShort();
+        var compCount = p.parseUShort() - 1;        // The first component is taken from the coverage table.
+        var components = new Array(compCount);
+        for (var j = 0; j < compCount; j++) {
+            components[j] = p.parseUShort();
+        }
+        // TODO c'est vraiment pourri comme sortie
+        t.push({ glyph: ligGlyph, components: components });
+    }
+    return t;
+}
+
+function parseLigatureSubTable(data, start) {
+    var p = new parse.Parser(data, start);
+    var substFormat = p.parseUShort();
+    check.argument(substFormat === 1, 'GSUB ligature table format identifier-format must be 1');
+    var coverageOffset = p.parseUShort();
+    var coverage = parseCoverageTable(data, start + coverageOffset);
+    var ligSetCount = p.parseUShort();
+    var lig = new Array(ligSetCount);
+    for (var i = 0; i < ligSetCount; i++) {
+        var ligSet = lig[i] = new Array(coverage.length);
+        for (var j = 0; j < coverage.length; j++) {
+            ligSet[j] = parseLigatureSetTable(data, start + p.parseUShort());
+        }
+    }
+    return lig;
+}
 
 // Parse a LookupTable (present in of GPOS, GSUB, GDEF, BASE, JSTF tables).
 function parseLookupTable(data, start) {
@@ -167,13 +202,12 @@ function parseLookupTable(data, start) {
      9+	Reserved	For future use (set to zero)
      */
 
-    console.log({"lookupType": lookupType});
+    console.log({lookupType: lookupType});
 
     // Single (format 1.1 1.2)	Replace one glyph with one glyph
     if (lookupType === 1) {
 
         var subtables = [];
-
         for (var i = 0; i < subTableCount; i++) {
             subtables.push(parseSubstitutionSubTable(data, start + subTableOffsets[i]));
         }
@@ -181,7 +215,10 @@ function parseLookupTable(data, start) {
     }
     // Ligature (format 4.1)	Replace multiple glyphs with one glyph
     else if(lookupType === 4) {
-
+        var subtables = [];
+        for (var i = 0; i < subTableCount; i++) {
+            subtables.push(parseLigatureSubTable(data, start + subTableOffsets[i]));
+        }
     }
 
     return table;
@@ -280,7 +317,7 @@ function parseGsubTable(data, start, font) {
     for (i = 0; i < defaultLookups.length; i++) {
         var lookupListIndex = defaultLookups[i];
         var table = parseLookupTable(data, lookupListAbsoluteOffset + lookupTableOffsets[lookupListIndex]);
-        console.log(lookupListIndex, table);
+        // TODO alimenter l'objet font
         //if (table.lookupType === 2 && !font.getGposKerningValue) font.getGposKerningValue = table.getKerningValue;
     }
 }
