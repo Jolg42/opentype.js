@@ -1627,7 +1627,7 @@ function parseBuffer(buffer) {
     }
     if (gsubTableEntry) {
         var gsubTable = uncompressTable(data, gsubTableEntry);
-        gsub.parse(gsubTable.data, gsubTable.offset, font);
+        font.tables.gsub = gsub.parse(gsubTable.data, gsubTable.offset, font);
     }
 
     if (fvarTableEntry) {
@@ -4207,8 +4207,8 @@ function parseSubstitutionSubTable(data, start) {
     var coverage = parseCoverageTable(data, start + coverageOffset);
 
     if (format === 1) {
-        console.log({"format": format});
-        console.log({"coverage": coverage});
+//        console.log({format: format});
+//        console.log({coverage: coverage});
 
         /*
          SingleSubstFormat1 subtable: Calculated output glyph indices
@@ -4248,12 +4248,14 @@ function parseLigatureSetTable(data, start) {
     var t = [];
     for (var i = 0; i < ligatureCount; i++) {
         var ligatureOffset = start + p.parseUShort();
+        // TODO GROS BUG utiliser ligatureOffset !
         var ligGlyph = p.parseUShort();
         var compCount = p.parseUShort() - 1;        // The first component is taken from the coverage table.
         var components = new Array(compCount);
         for (var j = 0; j < compCount; j++) {
             components[j] = p.parseUShort();
         }
+        // TODO c'est vraiment pourri comme sortie
         t.push({ glyph: ligGlyph, components: components });
     }
     return t;
@@ -4265,7 +4267,6 @@ function parseLigatureSubTable(data, start) {
     check.argument(substFormat === 1, 'GSUB ligature table format identifier-format must be 1');
     var coverageOffset = p.parseUShort();
     var coverage = parseCoverageTable(data, start + coverageOffset);
-console.log(coverage);
     var ligSetCount = p.parseUShort();
     var lig = new Array(ligSetCount);
     for (var i = 0; i < ligSetCount; i++) {
@@ -4274,7 +4275,7 @@ console.log(coverage);
             ligSet[j] = parseLigatureSetTable(data, start + p.parseUShort());
         }
     }
-console.log(lig);
+    return lig;
 }
 
 // Parse a LookupTable (present in of GPOS, GSUB, GDEF, BASE, JSTF tables).
@@ -4305,26 +4306,27 @@ function parseLookupTable(data, start) {
      9+	Reserved	For future use (set to zero)
      */
 
-    console.log({"lookupType": lookupType});
+//    console.log({lookupType: lookupType});
 
-    // Single (format 1.1 1.2)	Replace one glyph with one glyph
-    if (lookupType === 1) {
-
+    var subtableParsers = [
+        null,                           // 0
+        parseSubstitutionSubTable,      // Single (format 1.1 1.2)	Replace one glyph with one glyph
+        null,                           // 2
+        null,                           // 3
+        null,//parseLigatureSubTable,          // Ligature (format 4.1)	Replace multiple glyphs with one glyph
+        null,                           // 5
+        null                            // 6
+    ];
+    
+    var parsingFunction = subtableParsers[lookupType];
+    if (parsingFunction) {
         var subtables = [];
         for (var i = 0; i < subTableCount; i++) {
-            subtables.push(parseSubstitutionSubTable(data, start + subTableOffsets[i]));
+            subtables.push(parsingFunction(data, start + subTableOffsets[i]));
         }
-
+        table.subtables = subtables;
     }
-    // Ligature (format 4.1)	Replace multiple glyphs with one glyph
-    else if(lookupType === 4) {
-        var subtables = [];
-        for (var i = 0; i < subTableCount; i++) {
-            subtables.push(parseLigatureSubTable(data, start + subTableOffsets[i]));
-        }
-        console.log('TODO finir la 4', subTableCount);
-    }
-
+    
     return table;
 }
 
@@ -4411,23 +4413,46 @@ function parseGsubTable(data, start, font) {
     check.argument(!!defaultLookups, 'GSUB: defaults not found.');
 
     // LookupList
-    console.log('LOOKUP LIST');
     var lookupListOffset = p.parseUShort();
     p.relativeOffset = lookupListOffset;
     var lookupCount = p.parseUShort();
     var lookupTableOffsets = p.parseOffset16List(lookupCount);
     var lookupListAbsoluteOffset = start + lookupListOffset;
-
+    var lookupList = [];
     for (i = 0; i < defaultLookups.length; i++) {
         var lookupListIndex = defaultLookups[i];
         var table = parseLookupTable(data, lookupListAbsoluteOffset + lookupTableOffsets[lookupListIndex]);
-        // TODO alimenter l'objet font
-        //if (table.lookupType === 2 && !font.getGposKerningValue) font.getGposKerningValue = table.getKerningValue;
+        lookupList.push(table);
     }
+    
+    // 
+    return {
+        scriptList: scriptList,
+        featureList: featureList,
+        lookupList: lookupList
+    };
+}
+
+
+
+// GSUB Writing //////////////////////////////////////////////
+
+
+function makeGsubTable(fvar, names) {
+    var gsubHeader = new table.Table('GSUB', [
+        {name: 'version', type: 'ULONG', value: 0x10000},
+        {name: 'scriptList', type: 'TABLE'},
+        {name: 'featureList', type: 'TABLE'},
+        {name: 'lookupList', type: 'TABLE'}
+    ]);
+    
+    console.log('making gsub table');
+    
+    return gsubHeader;
 }
 
 exports.parse = parseGsubTable;
-
+exports.make = makeGsubTable;
 },{"../check":2,"../parse":9}],18:[function(require,module,exports){
 // The `head` table contains global information about the font.
 // https://www.microsoft.com/typography/OTSPEC/head.htm

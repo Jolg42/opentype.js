@@ -5,6 +5,7 @@
 
 var check = require('../check');
 var parse = require('../parse');
+var table = require('../table');
 
 // Parse ScriptList and FeatureList tables of GPOS, GSUB, GDEF, BASE, JSTF tables.
 // These lists are unused by now, this function is just the basis for a real parsing.
@@ -103,8 +104,8 @@ function parseSubstitutionSubTable(data, start) {
     var coverage = parseCoverageTable(data, start + coverageOffset);
 
     if (format === 1) {
-        console.log({format: format});
-        console.log({coverage: coverage});
+//        console.log({format: format});
+//        console.log({coverage: coverage});
 
         /*
          SingleSubstFormat1 subtable: Calculated output glyph indices
@@ -202,25 +203,25 @@ function parseLookupTable(data, start) {
      9+	Reserved	For future use (set to zero)
      */
 
-    console.log({lookupType: lookupType});
-
-    // Single (format 1.1 1.2)	Replace one glyph with one glyph
-    if (lookupType === 1) {
-
+    var subtableParsers = [
+        null,                           // 0
+        parseSubstitutionSubTable,      // Single (format 1.1 1.2)	Replace one glyph with one glyph
+        null,                           // 2
+        null,                           // 3
+        null,//parseLigatureSubTable,          // Ligature (format 4.1)	Replace multiple glyphs with one glyph
+        null,                           // 5
+        null                            // 6
+    ];
+    
+    var parsingFunction = subtableParsers[lookupType];
+    if (parsingFunction) {
         var subtables = [];
         for (var i = 0; i < subTableCount; i++) {
-            subtables.push(parseSubstitutionSubTable(data, start + subTableOffsets[i]));
+            subtables.push(parsingFunction(data, start + subTableOffsets[i]));
         }
-
+        table.subtables = subtables;
     }
-    // Ligature (format 4.1)	Replace multiple glyphs with one glyph
-    else if(lookupType === 4) {
-        var subtables = [];
-        for (var i = 0; i < subTableCount; i++) {
-            subtables.push(parseLigatureSubTable(data, start + subTableOffsets[i]));
-        }
-    }
-
+    
     return table;
 }
 
@@ -279,7 +280,7 @@ function parseFeatureTable(data, start) {
 
 
 // https://www.microsoft.com/typography/OTSPEC/gsub.htm
-function parseGsubTable(data, start, font) {
+function parseGsubTable(data, start) {
     var p = new parse.Parser(data, start);
     var tableVersion = p.parseFixed();
     check.argument(tableVersion === 1, 'Unsupported GSUB table version.');
@@ -307,19 +308,90 @@ function parseGsubTable(data, start, font) {
     check.argument(!!defaultLookups, 'GSUB: defaults not found.');
 
     // LookupList
-    console.log('LOOKUP LIST');
     var lookupListOffset = p.parseUShort();
     p.relativeOffset = lookupListOffset;
     var lookupCount = p.parseUShort();
     var lookupTableOffsets = p.parseOffset16List(lookupCount);
     var lookupListAbsoluteOffset = start + lookupListOffset;
-
+    var lookupList = [];
     for (i = 0; i < defaultLookups.length; i++) {
         var lookupListIndex = defaultLookups[i];
         var table = parseLookupTable(data, lookupListAbsoluteOffset + lookupTableOffsets[lookupListIndex]);
-        // TODO alimenter l'objet font
-        //if (table.lookupType === 2 && !font.getGposKerningValue) font.getGposKerningValue = table.getKerningValue;
+        lookupList.push(table);
     }
+    
+    // 
+    return {
+        scriptList: scriptList,
+        featureList: featureList,
+        lookupList: lookupList
+    };
+}
+
+
+
+// GSUB Writing //////////////////////////////////////////////
+
+
+function makeGsubTable(gsub) {
+    // TODO améliorer sfnt.js et/ou table.js pour pas mettre directement l'hexa des tables mais leur offset et mettre les tables à la fin.
+    var scriptList = new table.Table('scriptList', [
+        {name: 'scriptCount', type: 'USHORT', value: 1},
+        {name: 'scriptTag_0', type: 'TAG', value: 'DFLT'},
+        {name: 'script_0', type: 'TABLE', value: new table.Table('scriptTable', [
+            {name: 'defaultLangSys', type: 'TABLE', value: new table.Table('langSysRecord', [
+                {name: 'langSysTag', type: 'TAG', value: 'dflt'},
+                {name: 'langSys', type: 'TABLE',value: new table.Table('langSysTable', [
+                    {name: 'lookupOrder', type: 'USHORT', value: 0},
+                    {name: 'reqFeatureIndex', type: 'USHORT', value: 0xffff},
+                    {name: 'featureCount', type: 'USHORT', value: 1},
+                    {name: 'featureIndex_0', type: 'USHORT', value: 0}
+                ])}
+            ])},
+            {name: 'langSysCount', type: 'USHORT', value: 0}
+        ])},
+    ]);
+    
+    var featureList = new table.Table('featureList', [
+        {name: 'featureCount', type: 'USHORT', value: 1},
+        {name: 'featureTag_0', type: 'TAG', value: 'subs'},
+        {name: 'feature_0', type: 'TABLE', value: new table.Table('featureTable', [
+            {name: 'featureParams', type: 'USHORT', value: 0},
+            {name: 'lookupCount', type: 'USHORT', value: 1},
+            {name: 'lookupListIndex_0', type: 'USHORT', value: 0}
+        ])}
+    ]);
+    
+    var lookupList = new table.Table('lookupList', [
+        {name: 'lookupCount', type: 'USHORT', value: 1},
+        {name: 'lookup_0', type: 'TABLE', value: new table.Table('lookupTable', [
+            {name: 'lookupType', type: 'USHORT', value: 1}, // TYPE 1
+            {name: 'lookupFlag', type: 'USHORT', value: 0},
+            {name: 'subtableCount', type: 'USHORT', value: 1},
+            {name: 'subtable_0', type: 'TABLE', value: new table.Table('substitutionTable', [
+                {name: 'substFormat', type: 'USHORT', value: 1},            // Single substitution format 1
+                {name: 'coverage', type: 'TABLE', value: new table.Table('coverageTable', [
+                    {name: 'coverageFormat', type: 'USHORT', value: 1},
+                    {name: 'glyphCount', type: 'USHORT', value: 1},
+                    {name: 'glyphID_0', type: 'USHORT', value: 6}       // le glyph 6 va être remplacé...
+                ])},
+                {name: 'deltaGlyphID', type: 'USHORT', value: 9 - 6}    // ...par le 9
+            ])}
+        ])},
+    ]);
+    
+    var gsubTable = new table.Table('GSUB', [
+        {name: 'version', type: 'ULONG', value: 0x10000},
+        {name: 'scriptList', type: 'TABLE', value: scriptList},
+        {name: 'featureList', type: 'TABLE', value: featureList},
+        {name: 'lookupList', type: 'TABLE', value: lookupList}
+    ]);
+    
+    console.log('making gsub table');
+    
+    
+    return gsubTable;
 }
 
 exports.parse = parseGsubTable;
+exports.make = makeGsubTable;

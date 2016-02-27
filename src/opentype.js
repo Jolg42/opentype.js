@@ -274,7 +274,7 @@ function parseBuffer(buffer) {
     }
     if (gsubTableEntry) {
         var gsubTable = uncompressTable(data, gsubTableEntry);
-        gsub.parse(gsubTable.data, gsubTable.offset, font);
+        font.tables.gsub = gsub.parse(gsubTable.data, gsubTable.offset);
     }
 
     if (fvarTableEntry) {
