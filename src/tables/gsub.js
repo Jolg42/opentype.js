@@ -216,6 +216,7 @@ function parseLookupTable(data, start) {
     var parsingFunction = subtableParsers[lookupType];
     if (parsingFunction) {
         var subtables = [];
+
         for (var i = 0; i < subTableCount; i++) {
             subtables.push(parsingFunction(data, start + subTableOffsets[i]));
         }
