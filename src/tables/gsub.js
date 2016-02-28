@@ -345,7 +345,6 @@ function makeGsubTable(gsub) {
 
     console.log('making gsub table');
 
-
     return gsubTable;
 }
 
