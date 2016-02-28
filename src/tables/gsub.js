@@ -212,7 +212,7 @@ function parseLookupTable(data, start) {
         null,                           // 5
         null                            // 6
     ];
-    
+
     var parsingFunction = subtableParsers[lookupType];
     if (parsingFunction) {
         var subtables = [];
@@ -221,7 +221,7 @@ function parseLookupTable(data, start) {
         }
         table.subtables = subtables;
     }
-    
+
     return table;
 }
 
@@ -308,6 +308,7 @@ function parseGsubTable(data, start) {
     check.argument(!!defaultLookups, 'GSUB: defaults not found.');
 
     // LookupList
+    console.log('LOOKUP LIST');
     var lookupListOffset = p.parseUShort();
     p.relativeOffset = lookupListOffset;
     var lookupCount = p.parseUShort();
@@ -319,8 +320,8 @@ function parseGsubTable(data, start) {
         var table = parseLookupTable(data, lookupListAbsoluteOffset + lookupTableOffsets[lookupListIndex]);
         lookupList.push(table);
     }
-    
-    // 
+
+    //
     return {
         scriptList: scriptList,
         featureList: featureList,
@@ -351,7 +352,7 @@ function makeGsubTable(gsub) {
             {name: 'langSysCount', type: 'USHORT', value: 0}
         ])},
     ]);
-    
+
     var featureList = new table.Table('featureList', [
         {name: 'featureCount', type: 'USHORT', value: 1},
         {name: 'featureTag_0', type: 'TAG', value: 'subs'},
@@ -361,7 +362,7 @@ function makeGsubTable(gsub) {
             {name: 'lookupListIndex_0', type: 'USHORT', value: 0}
         ])}
     ]);
-    
+
     var lookupList = new table.Table('lookupList', [
         {name: 'lookupCount', type: 'USHORT', value: 1},
         {name: 'lookup_0', type: 'TABLE', value: new table.Table('lookupTable', [
@@ -379,17 +380,17 @@ function makeGsubTable(gsub) {
             ])}
         ])},
     ]);
-    
+
     var gsubTable = new table.Table('GSUB', [
         {name: 'version', type: 'ULONG', value: 0x10000},
         {name: 'scriptList', type: 'TABLE', value: scriptList},
         {name: 'featureList', type: 'TABLE', value: featureList},
         {name: 'lookupList', type: 'TABLE', value: lookupList}
     ]);
-    
+
     console.log('making gsub table');
-    
-    
+
+
     return gsubTable;
 }
 
