@@ -47,52 +47,6 @@ function parseCoverageTable(data, start) {
     }
 }
 
-// Parse a Class Definition Table in a GSUB, GPOS or GDEF table.
-// Returns a function that gets a class value from a glyph ID.
-function parseClassDefTable(data, start) {
-    var p = new parse.Parser(data, start);
-    var format = p.parseUShort();
-    if (format === 1) {
-        // Format 1 specifies a range of consecutive glyph indices, one class per glyph ID.
-        var startGlyph = p.parseUShort();
-        var glyphCount = p.parseUShort();
-        var classes = p.parseUShortList(glyphCount);
-        return function(glyphID) {
-            return classes[glyphID - startGlyph] || 0;
-        };
-    }
-    else if (format === 2) {
-        // Format 2 defines multiple groups of glyph indices that belong to the same class.
-        var rangeCount = p.parseUShort();
-        var startGlyphs = [];
-        var endGlyphs = [];
-        var classValues = [];
-        for (var i = 0; i < rangeCount; i++) {
-            startGlyphs[i] = p.parseUShort();
-            endGlyphs[i] = p.parseUShort();
-            classValues[i] = p.parseUShort();
-        }
-
-        return function(glyphID) {
-            var l = 0;
-            var r = startGlyphs.length - 1;
-            while (l < r) {
-                var c = (l + r + 1) >> 1;
-                if (glyphID < startGlyphs[c]) {
-                    r = c - 1;
-                } else {
-                    l = c;
-                }
-            }
-
-            if (startGlyphs[l] <= glyphID && glyphID <= endGlyphs[l]) {
-                return classValues[l] || 0;
-            }
-
-            return 0;
-        };
-    }
-}
 
 // Parse substitution subtable, format 1 or format 2
 // The subtable is returned in the form of a lookup function.
@@ -323,7 +277,10 @@ function parseGsubTable(data, start) {
     return {
         scriptList: scriptList,
         featureList: featureList,
-        lookupList: lookupList
+        lookupList: lookupList,
+        offset: start,
+        length: p.relativeOffset,
+        bytes: new Uint8Array(data.buffer.slice(start, start+p.relativeOffset))
     };
 }
 
@@ -333,7 +290,7 @@ function parseGsubTable(data, start) {
 
 
 function makeGsubTable(gsub) {
-    // TODO améliorer sfnt.js et/ou table.js pour pas mettre directement l'hexa des tables mais leur offset et mettre les tables à la fin.
+    // TODO améliorer sfnt.js et/ou type.js pour pas mettre directement l'hexa des tables mais leur offset et mettre les tables à la fin.
     var scriptList = new table.Table('scriptList', [
         {name: 'scriptCount', type: 'USHORT', value: 1},
         {name: 'scriptTag_0', type: 'TAG', value: 'DFLT'},
