@@ -278,7 +278,6 @@ function parseFeatureTable(data, start) {
     return lookupList;
 }
 
-
 // https://www.microsoft.com/typography/OTSPEC/gsub.htm
 function parseGsubTable(data, start) {
     var p = new parse.Parser(data, start);
