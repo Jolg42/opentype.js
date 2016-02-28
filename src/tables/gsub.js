@@ -307,7 +307,6 @@ function parseGsubTable(data, start) {
     check.argument(!!defaultLookups, 'GSUB: defaults not found.');
 
     // LookupList
-    console.log('LOOKUP LIST');
     var lookupListOffset = p.parseUShort();
     p.relativeOffset = lookupListOffset;
     var lookupCount = p.parseUShort();
