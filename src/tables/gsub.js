@@ -107,25 +107,64 @@ function parseSubstitutionSubTable(data, start) {
 
 }
 
+/*
+ uint16	LigatureCount	Number of Ligature tables
+ Offset	Ligature
+ [LigatureCount]	Array of offsets to Ligature tables-from beginning of LigatureSet table-ordered by preference
+ */
 function parseLigatureSetTable(data, start) {
     var p = new parse.Parser(data, start);
     var ligatureCount = p.parseUShort();
-    var t = [];
+    var lig = [];
+
+    /*
+     Ligature table: Glyph components for one ligature
+     Type	    Name	    Description
+     GlyphID	LigGlyph	GlyphID of ligature to substitute
+     uint16	    CompCount	Number of components in the ligature
+     GlyphID	Component
+     [CompCount - 1]	Array of component GlyphIDs-start with the second component-ordered in writing direction
+     */
+    // TODO Uncaught RangeError: Offset is outside the bounds of the DataView
+    // start: 75511
+    // last ligatureOffset: 88311
+    // for fonts/LigatureSymbols-2.11.otf
     for (var i = 0; i < ligatureCount; i++) {
         var ligatureOffset = start + p.parseUShort();
-        // TODO GROS BUG utiliser ligatureOffset !
-        var ligGlyph = p.parseUShort();
-        var compCount = p.parseUShort() - 1;        // The first component is taken from the coverage table.
+
+        //console.log({"start": start});
+        //console.log({"ligatureOffset": ligatureOffset});
+
+        var ligGlyph = data.getUint16(ligatureOffset, false);
+        ligatureOffset += 2;
+
+        var compCount = data.getUint16(ligatureOffset, false) - 1; // The first component is taken from the coverage table.
+        ligatureOffset += 2;
+
         var components = new Array(compCount);
         for (var j = 0; j < compCount; j++) {
-            components[j] = p.parseUShort();
+            components[j] = data.getUint16(ligatureOffset, false);
+            ligatureOffset += 2;
         }
+
         // TODO c'est vraiment pourri comme sortie
-        t.push({ glyph: ligGlyph, components: components });
+        lig.push({ glyph: ligGlyph, components: components });
     }
-    return t;
+
+    //console.log({"lig": lig});
+
+    return lig;
 }
 
+/*
+ LigatureSubstFormat1 subtable: All ligature substitutions in a script
+ Type	        Name	    Description
+ uint16	        SubstFormat	Format identifier-format = 1
+ Offset	        Coverage	Offset to Coverage table-from beginning of Substitution table
+ uint16	        LigSetCount	Number of LigatureSet tables
+ Offset	        LigatureSet
+ [LigSetCount]	Array of offsets to LigatureSet tables-from beginning of Substitution table-ordered by Coverage Index
+ */
 function parseLigatureSubTable(data, start) {
     var p = new parse.Parser(data, start);
     var substFormat = p.parseUShort();
@@ -134,14 +173,111 @@ function parseLigatureSubTable(data, start) {
     var coverage = parseCoverageTable(data, start + coverageOffset);
     var ligSetCount = p.parseUShort();
     var lig = new Array(ligSetCount);
+
     for (var i = 0; i < ligSetCount; i++) {
         var ligSet = lig[i] = new Array(coverage.length);
         for (var j = 0; j < coverage.length; j++) {
             ligSet[j] = parseLigatureSetTable(data, start + p.parseUShort());
         }
     }
+
     return lig;
 }
+
+/*
+ AlternateSubstFormat1 subtable: Alternative output glyphs
+ Type	Name	            Description
+ uint16	SubstFormat	        Format identifier-format = 1
+ Offset	Coverage	        Offset to Coverage table-from beginning of Substitution table
+ uint16	AlternateSetCount	Number of AlternateSet tables
+ Offset	AlternateSet
+ [AlternateSetCount]	    Array of offsets to AlternateSet tables-from beginning of Substitution table-ordered by Coverage Index
+ */
+function parseAlternateTable(data, start) {
+    var p = new parse.Parser(data, start);
+    var substFormat = p.parseUShort();
+    check.argument(substFormat === 1, 'GSUB ligature table format identifier-format must be 1');
+    var coverageOffset = p.parseUShort();
+    var coverage = parseCoverageTable(data, start + coverageOffset);
+    var alternateSetCount = p.parseUShort();
+
+    var alternates = [];
+    for(var i = 0; i < alternateSetCount; i++) {
+        alternates.push({glyphID: coverage[i], alternates: parseAlternateSetTable(data, start + p.parseUShort())});
+    }
+
+    console.log({"alternates": alternates});
+
+    return alternates;
+}
+
+/*
+ AlternateSet table
+ Type	    Name	                Description
+ uint16	    GlyphCount	            Number of GlyphIDs in the Alternate array
+ GlyphID	Alternate[GlyphCount]	Array of alternate GlyphIDs-in arbitrary order
+ */
+function parseAlternateSetTable(data, start) {
+    var p = new parse.Parser(data, start);
+    var glyphCount = p.parseUShort();
+
+    var glyphIDs = [];
+    for(var i = 0; i < glyphCount; i++) {
+        glyphIDs.push(p.parseUShort());
+    }
+
+    return glyphIDs;
+}
+
+
+/*
+ MultipleSubstFormat1 subtable: Multiple output glyphs
+ Type	Name	        Description
+ uint16	SubstFormat	    Format identifier-format = 1
+ Offset	Coverage	    Offset to Coverage table-from beginning of Substitution table
+ uint16	SequenceCount	Number of Sequence table offsets in the Sequence array
+ Offset	Sequence
+ [SequenceCount]	    Array of offsets to Sequence tables-from beginning of Substitution table-ordered by Coverage Index
+
+ */
+function parseMultipleTable(data, start) {
+    console.log({"parseMultipleTable": 'parseMultipleTable'});
+    var p = new parse.Parser(data, start);
+    var substFormat = p.parseUShort();
+    check.argument(substFormat === 1, 'GSUB ligature table format identifier-format must be 1');
+    var coverageOffset = p.parseUShort();
+    var coverage = parseCoverageTable(data, start + coverageOffset);
+    var sequenceCount = p.parseUShort();
+
+    console.log({"coverage": coverage});
+    console.log({"sequenceCount": sequenceCount});
+
+    var alternates = [];
+    for(var i = 0; i < sequenceCount; i++) {
+        alternates.push({glyphID: coverage[i], multiples: parseSequenceTable(data, start + p.parseUShort())});
+    }
+
+    console.log({"alternates": alternates});
+}
+
+/*
+ Type	    Name	    Description
+ uint16	    GlyphCount	Number of GlyphIDs in the Substitute array. This should always be greater than 0.
+ GlyphID	Substitute
+ [GlyphCount]	        String of GlyphIDs to substitute
+ */
+function parseSequenceTable(data, start) {
+    var p = new parse.Parser(data, start);
+    var glyphCount = p.parseUShort();
+
+    var glyphIDs = [];
+    for(var i = 0; i < glyphCount; i++) {
+        glyphIDs.push(p.parseUShort());
+    }
+
+    return glyphIDs;
+}
+
 
 // Parse a LookupTable (present in of GPOS, GSUB, GDEF, BASE, JSTF tables).
 function parseLookupTable(data, start) {
@@ -173,10 +309,11 @@ function parseLookupTable(data, start) {
 
     var subtableParsers = [
         null,                           // 0
-        parseSubstitutionSubTable,      // Single (format 1.1 1.2)	Replace one glyph with one glyph
-        null,                           // 2
-        null,                           // 3
-        null,//parseLigatureSubTable,          // Ligature (format 4.1)	Replace multiple glyphs with one glyph
+        parseSubstitutionSubTable,      // 1 Single (format 1.1 1.2) Replace one glyph with one glyph
+        // TODO Find font with multiple to test parseMultipleTable
+        //parseMultipleTable,             // 2 Multiple (format 2.1)	Replace one glyph with more than one glyph
+        parseAlternateTable,            // 3 Alternate (format 3.1)	Replace one glyph with one of many glyphs
+        parseLigatureSubTable,          // 4 Ligature (format 4.1) Replace multiple glyphs with one glyph
         null,                           // 5
         null                            // 6
     ];
