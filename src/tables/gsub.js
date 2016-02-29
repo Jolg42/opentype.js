@@ -56,11 +56,9 @@ function parseSubstitutionSubTable(data, start) {
     var format = p.parseUShort();
     var coverageOffset = p.parseUShort();
     var coverage = parseCoverageTable(data, start + coverageOffset);
+    var glyphsIDs = [];
 
     if (format === 1) {
-//        console.log({format: format});
-//        console.log({coverage: coverage});
-
         /*
          SingleSubstFormat1 subtable: Calculated output glyph indices
 
@@ -71,24 +69,40 @@ function parseSubstitutionSubTable(data, start) {
          */
 
         //DeltaGlyphID is the constant value added to each input glyph index to calculate the index of the corresponding output glyph.
-        var DeltaGlyphID = p.parseUShort();
+        var deltaGlyphID = p.parseUShort();
 
-        var glyphsIDs = [];
 
         for (var i = 0; i < coverage.length; i++) {
             var originalGlyphID = coverage[i];
-            var substituteGlyphID = originalGlyphID + DeltaGlyphID;
+            var substituteGlyphID = originalGlyphID + deltaGlyphID;
 
-//            console.log({"originalGlyphID": originalGlyphID.toString(16)});
-//            console.log({"substituteGlyphID": substituteGlyphID.toString(16)});
-
-            glyphsIDs.push(substituteGlyphID);
+            glyphsIDs.push([originalGlyphID, substituteGlyphID]);
         }
 
-//        console.log({"DeltaGlyphID": DeltaGlyphID});
-//        console.log({"glyphsIDs": glyphsIDs});
+        return glyphsIDs;
+    }
+    else if(format === 2) {
+        /*
+         SingleSubstFormat2 subtable: Specified output glyph indices
+         Type	    Name	    Description
+         uint16	    SubstFormat	Format identifier-format = 2
+         Offset	    Coverage	Offset to Coverage table-from beginning of Substitution table
+         uint16	    GlyphCount	Number of GlyphIDs in the Substitute array
+         GlyphID	Substitute
+         [GlyphCount]	        Array of substitute GlyphIDs-ordered by Coverage Index
+         */
+
+        var glyphCount = p.parseUShort();
+
+        for (var i = 0; i < glyphCount; i++) {
+            var originalGlyphID = coverage[i];
+            var substituteGlyphID = p.parseUShort();
+
+            glyphsIDs.push([originalGlyphID, substituteGlyphID]);
+        }
 
         return glyphsIDs;
+
     }
 
 }
