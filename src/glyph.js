@@ -66,6 +66,10 @@ Glyph.prototype.bindConstructorValues = function(options) {
         this.advanceWidth = options.advanceWidth;
     }
 
+    if (options.leftSideBearing) {
+        this.leftSideBearing = options.leftSideBearing;
+    }
+
     // The path for a glyph is the most memory intensive, and is bound as a value
     // with a getter/setter to ensure we actually do path parsing only once the
     // path is actually needed by anything.
