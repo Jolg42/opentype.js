@@ -679,7 +679,7 @@ function Font(options) {
             designer: {en: options.designer || ' '},
             designerURL: {en: options.designerURL || ' '},
             manufacturer: {en: options.manufacturer || ' '},
-            manufacturerURL: {en: options.manufacturerURL || ' '},
+            vendorURL: {en: options.vendorURL || ' '},
             license: {en: options.license || ' '},
             licenseURL: {en: options.licenseURL || ' '},
             version: {en: options.version || 'Version 0.1'},
@@ -1044,6 +1044,10 @@ Glyph.prototype.bindConstructorValues = function(options) {
 
     if (options.advanceWidth) {
         this.advanceWidth = options.advanceWidth;
+    }
+
+    if (options.leftSideBearing) {
+        this.leftSideBearing = options.leftSideBearing;
     }
 
     // The path for a glyph is the most memory intensive, and is bound as a value
@@ -1634,6 +1638,7 @@ function parseBuffer(buffer) {
     if (metaTableEntry) {
         var metaTable = uncompressTable(data, metaTableEntry);
         font.tables.meta = meta.parse(metaTable.data, metaTable.offset);
+        font.metas = font.tables.meta;
     }
 
     return font;
@@ -4511,7 +4516,7 @@ var nameTableNames = [
     'manufacturer',           // 8
     'designer',               // 9
     'description',            // 10
-    'manufacturerURL',        // 11
+    'vendorURL',              // 11
     'designerURL',            // 12
     'license',                // 13
     'licenseURL',             // 14
