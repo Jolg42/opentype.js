@@ -674,7 +674,8 @@ function Font(options) {
         this.names = {
             fontFamily: {en: options.familyName || ' '},
             fontSubfamily: {en: options.styleName || ' '},
-            fullName: {en: options.fullName || options.familyName + ' ' + options.styleName},
+            // If englishStyleName is 'Regular' don't put it in fullName -> Opentype spec rule (mentionned in Adobe's) + it's cleaner
+            fullName: {en: options.fullName || options.familyName.toLowerCase() === 'regular' ? options.familyName : options.familyName + ' ' + options.styleName},
             postScriptName: {en: options.postScriptName || options.familyName + options.styleName},
             designer: {en: options.designer || ' '},
             designerURL: {en: options.designerURL || ' '},
@@ -5908,7 +5909,7 @@ function fontToSfntTable(font) {
 
     var englishFamilyName = font.getEnglishName('fontFamily');
     var englishStyleName = font.getEnglishName('fontSubfamily');
-    var englishFullName = englishFamilyName + ' ' + englishStyleName;
+    var englishFullName = font.getEnglishName('fullName');
     var postScriptName = font.getEnglishName('postScriptName');
     if (!postScriptName) {
         postScriptName = englishFamilyName.replace(/\s/g, '') + '-' + englishStyleName;

@@ -253,7 +253,7 @@ function fontToSfntTable(font) {
 
     var englishFamilyName = font.getEnglishName('fontFamily');
     var englishStyleName = font.getEnglishName('fontSubfamily');
-    var englishFullName = englishFamilyName + ' ' + englishStyleName;
+    var englishFullName = font.getEnglishName('fullName');
     var postScriptName = font.getEnglishName('postScriptName');
     if (!postScriptName) {
         postScriptName = englishFamilyName.replace(/\s/g, '') + '-' + englishStyleName;
