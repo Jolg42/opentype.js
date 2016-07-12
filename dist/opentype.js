@@ -653,6 +653,7 @@ var path = require('./path');
 var sfnt = require('./tables/sfnt');
 var encoding = require('./encoding');
 var glyphset = require('./glyphset');
+var Substitution = require('./substitution');
 var util = require('./util');
 
 // A Font represents a loaded OpenType font file.
@@ -702,6 +703,7 @@ function Font(options) {
     this.supported = true; // Deprecated: parseBuffer will throw an error if font is not supported.
     this.glyphs = new glyphset.GlyphSet(this, options.glyphs || []);
     this.encoding = new encoding.DefaultEncoding(this);
+    this.substitution = new Substitution(this);
     this.tables = this.tables || {};
 }
 
@@ -1021,7 +1023,7 @@ Font.prototype.usWeightClasses = {
 
 exports.Font = Font;
 
-},{"./encoding":4,"./glyphset":7,"./path":10,"./tables/sfnt":28,"./util":30,"fs":undefined}],6:[function(require,module,exports){
+},{"./encoding":4,"./glyphset":7,"./path":11,"./substitution":12,"./tables/sfnt":31,"./util":33,"fs":undefined}],6:[function(require,module,exports){
 // The Glyph object
 
 'use strict';
@@ -1325,7 +1327,7 @@ Glyph.prototype.drawMetrics = function(ctx, x, y, fontSize) {
 
 exports.Glyph = Glyph;
 
-},{"./check":2,"./draw":3,"./path":10}],7:[function(require,module,exports){
+},{"./check":2,"./draw":3,"./path":11}],7:[function(require,module,exports){
 // The GlyphSet object
 
 'use strict';
@@ -1405,6 +1407,212 @@ exports.ttfGlyphLoader = ttfGlyphLoader;
 exports.cffGlyphLoader = cffGlyphLoader;
 
 },{"./glyph":6}],8:[function(require,module,exports){
+// The Layout object is the prototype of Substition objects, and provides utility methods to manipulate
+// common layout tables (GPOS, GSUB, GDEF...)
+
+'use strict';
+
+function searchTag(arr, tag) {
+    /* jshint bitwise: false */
+    var imin = 0;
+    var imax = arr.length - 1;
+    while (imin <= imax) {
+        var imid = (imin + imax) >>> 1;
+        var val = arr[imid].tag;
+        if (val === tag) {
+            return imid;
+        } else if (val < tag) {
+            imin = imid + 1;
+        } else { imax = imid - 1; }
+    }
+    // Not found: return -1-insertion point
+    return -imin - 1;
+}
+
+function binSearch(arr, value) {
+    /* jshint bitwise: false */
+    var imin = 0;
+    var imax = arr.length - 1;
+    while (imin <= imax) {
+        var imid = (imin + imax) >>> 1;
+        var val = arr[imid];
+        if (val === value) {
+            return imid;
+        } else if (val < value) {
+            imin = imid + 1;
+        } else { imax = imid - 1; }
+    }
+    // Not found: return -1-insertion point
+    return -imin - 1;
+}
+
+var Layout = {
+    // Binary search an object by "tag" property
+    searchTag: searchTag,
+
+    // Binary search in a list of numbers
+    binSearch: binSearch,
+
+    // Returns all scripts in the substitution table.
+    getScriptNames: function() {
+        var gsub = this.getGsubTable();
+        if (!gsub) { return []; }
+        return gsub.scripts.map(function(script) {
+            return script.tag;
+        });
+    },
+
+    /**
+     * Returns all LangSysRecords in the given script.
+     * @param {string} script - Use 'DFLT' for default script
+     * @param {boolean} create - forces the creation of this script table if it doesn't exist.
+     */
+    getScriptTable: function(script, create) {
+        var gsub = this.getGsubTable(create);
+        if (gsub) {
+            var scripts = gsub.scripts;
+            var pos = searchTag(gsub.scripts, script);
+            if (pos >= 0) {
+                return scripts[pos].script;
+            } else {
+                var scr = {
+                    tag: script,
+                    script: {
+                        defaultLangSys: { reserved: 0, reqFeatureIndex: 0xffff, featureIndexes: [] },
+                        langSysRecords: []
+                    }
+                };
+                scripts.splice(-1 - pos, 0, scr.script);
+                return scr;
+            }
+        }
+    },
+
+    /**
+     * Returns a language system table
+     * @param {string} script - Use 'DFLT' for default script
+     * @param {string} language - Use 'DFLT' for default language
+     * @param {boolean} create - forces the creation of this langSysTable if it doesn't exist.
+     */
+    getLangSysTable: function(script, language, create) {
+        var scriptTable = this.getScriptTable(script, create);
+        if (scriptTable) {
+            if (language === 'DFLT') {
+                return scriptTable.defaultLangSys;
+            }
+            var pos = searchTag(scriptTable.langSysRecords, language);
+            if (pos >= 0) {
+                return scriptTable.langSysRecords[pos].langSys;
+            } else if (create) {
+                var langSysRecord = {
+                    tag: language,
+                    langSys: { reserved: 0, reqFeatureIndex: 0xffff, featureIndexes: [] }
+                };
+                scriptTable.langSysRecords.splice(-1 - pos, 0, langSysRecord);
+                return langSysRecord.langSys;
+            }
+        }
+    },
+
+    /**
+     * Get a specific feature table.
+     *
+     * @param {string} script - Use 'DFLT' for default script
+     * @param {string} language - Use 'DFLT' for default language
+     * @param {string} feature - One of the codes listed at https://www.microsoft.com/typography/OTSPEC/featurelist.htm
+     * @param {boolean} create - forces the creation of the feature table if it doesn't exist.
+     */
+    getFeatureTable: function(script, language, feature, create) {
+        var langSysTable = this.getLangSysTable(script, language, create);
+        if (langSysTable) {
+            var featureRecord;
+            var featIndexes = langSysTable.featureIndexes;
+            var allFeatures = this.font.tables.gsub.features;
+            // The FeatureIndex array of indices is in arbitrary order,
+            // even if allFeatures is sorted alphabetically by feature tag.
+            for (var i = 0; i < featIndexes.length; i++) {
+                featureRecord = allFeatures[featIndexes[i]];
+                if (featureRecord.tag === feature) {
+                    return featureRecord.feature;
+                }
+            }
+            if (create) {
+                featureRecord = {
+                    tag: feature,
+                    feature: { params: 0, lookupListIndexes: [] }
+                };
+                var index = allFeatures.length;
+                allFeatures.push(featureRecord);
+                featIndexes.push(index);
+                return featureRecord.feature;
+            }
+        }
+    },
+
+    /**
+     * Get the first lookup table of a given type for a script/language/feature.
+     * @param {string} script - Use 'DFLT' for default script
+     * @param {string} language - Use 'DFLT' for default language
+     * @param {string} feature - 4-letter feature code
+     * @param {number} lookupType - 1 to 8
+     * @param {boolean} create - forces the creation of the lookup table if it doesn't exist, with no subtables.
+     */
+    getLookupTable: function(script, language, feature, lookupType, create) {
+        var featureTable = this.getFeatureTable(script, language, feature, create);
+        if (featureTable) {
+            var lookupTable;
+            var lookupListIndexes = featureTable.lookupListIndexes;
+            var allLookups = this.font.tables.gsub.lookups;
+            // lookupListIndexes are in no particular order, so use naïve search.
+            for (var i = 0; i < lookupListIndexes.length; i++) {
+                lookupTable = allLookups[lookupListIndexes[i]];
+                if (lookupTable.lookupType === lookupType) {
+                    return lookupTable;
+                }
+            }
+            if (create) {
+                lookupTable = {
+                    lookupType: lookupType,
+                    lookupFlag: 0,
+                    subtables: [],
+                    markFilteringSet: undefined
+                };
+                var index = allLookups.length;
+                allLookups.push(lookupTable);
+                lookupListIndexes.push(index);
+                return lookupTable;
+            }
+        }
+    },
+
+    /**
+     * Returns the list of glyph indexes of a coverage table.
+     * Format 1: the list is stored raw
+     * Format 2: compact list as range records.
+     */
+    expandCoverage: function(coverageTable) {
+        if (coverageTable.format === 1) {
+            return coverageTable.glyphs;
+        } else {
+            var glyphs = [];
+            var ranges = coverageTable.ranges;
+            for (var i = 0; i < ranges; i++) {
+                var range = ranges[i];
+                var start = range.start;
+                var end = range.end;
+                for (var j = start; j <= end; j++) {
+                    glyphs.push(j);
+                }
+            }
+            return glyphs;
+        }
+    }
+
+};
+
+module.exports = Layout;
+
+},{}],9:[function(require,module,exports){
 // opentype.js
 // https://github.com/nodebox/opentype.js
 // (c) 2015 Frederik De Bleser
@@ -1428,6 +1636,7 @@ var cff = require('./tables/cff');
 var fvar = require('./tables/fvar');
 var glyf = require('./tables/glyf');
 var gpos = require('./tables/gpos');
+var gsub = require('./tables/gsub');
 var head = require('./tables/head');
 var hhea = require('./tables/hhea');
 var hmtx = require('./tables/hmtx');
@@ -1571,6 +1780,7 @@ function parseBuffer(buffer) {
     var fvarTableEntry;
     var glyfTableEntry;
     var gposTableEntry;
+    var gsubTableEntry;
     var hmtxTableEntry;
     var kernTableEntry;
     var locaTableEntry;
@@ -1641,6 +1851,9 @@ function parseBuffer(buffer) {
             case 'GPOS':
                 gposTableEntry = tableEntry;
                 break;
+            case 'GSUB':
+                gsubTableEntry = tableEntry;
+                break;
             case 'meta':
                 metaTableEntry = tableEntry;
                 break;
@@ -1678,6 +1891,10 @@ function parseBuffer(buffer) {
     if (gposTableEntry) {
         var gposTable = uncompressTable(data, gposTableEntry);
         gpos.parse(gposTable.data, gposTable.offset, font);
+    }
+    if (gsubTableEntry) {
+        var gsubTable = uncompressTable(data, gsubTableEntry);
+        font.tables.gsub = gsub.parse(gsubTable.data, gsubTable.offset);
     }
 
     if (fvarTableEntry) {
@@ -1733,10 +1950,12 @@ exports.parse = parseBuffer;
 exports.load = load;
 exports.loadSync = loadSync;
 
-},{"./encoding":4,"./font":5,"./glyph":6,"./parse":9,"./path":10,"./tables/cff":12,"./tables/cmap":13,"./tables/fvar":14,"./tables/glyf":15,"./tables/gpos":16,"./tables/head":17,"./tables/hhea":18,"./tables/hmtx":19,"./tables/kern":20,"./tables/loca":21,"./tables/ltag":22,"./tables/maxp":23,"./tables/meta":24,"./tables/name":25,"./tables/os2":26,"./tables/post":27,"./util":30,"fs":undefined,"tiny-inflate":1}],9:[function(require,module,exports){
+},{"./encoding":4,"./font":5,"./glyph":6,"./parse":10,"./path":11,"./tables/cff":14,"./tables/cmap":15,"./tables/fvar":16,"./tables/glyf":17,"./tables/gpos":18,"./tables/gsub":19,"./tables/head":20,"./tables/hhea":21,"./tables/hmtx":22,"./tables/kern":23,"./tables/loca":24,"./tables/ltag":25,"./tables/maxp":26,"./tables/meta":27,"./tables/name":28,"./tables/os2":29,"./tables/post":30,"./util":33,"fs":undefined,"tiny-inflate":1}],10:[function(require,module,exports){
 // Parsing utility functions
 
 'use strict';
+
+var check = require('./check');
 
 // Retrieve an unsigned byte from the DataView.
 exports.getByte = function getByte(dataView, offset) {
@@ -1747,11 +1966,11 @@ exports.getCard8 = exports.getByte;
 
 // Retrieve an unsigned 16-bit short from the DataView.
 // The value is stored in big endian.
-exports.getUShort = function(dataView, offset) {
+function getUShort(dataView, offset) {
     return dataView.getUint16(offset, false);
-};
+}
 
-exports.getCard16 = exports.getUShort;
+exports.getUShort = exports.getCard16 = getUShort;
 
 // Retrieve a signed 16-bit short from the DataView.
 // The value is stored in big endian.
@@ -1882,20 +2101,6 @@ Parser.prototype.parseFixed = function() {
     return v;
 };
 
-Parser.prototype.parseOffset16List =
-Parser.prototype.parseUShortList = function(count) {
-    var offsets = new Array(count);
-    var dataView = this.data;
-    var offset = this.offset + this.relativeOffset;
-    for (var i = 0; i < count; i++) {
-        offsets[i] = exports.getUShort(dataView, offset);
-        offset += 2;
-    }
-
-    this.relativeOffset += count * 2;
-    return offsets;
-};
-
 Parser.prototype.parseString = function(length) {
     var dataView = this.data;
     var offset = this.offset + this.relativeOffset;
@@ -1918,25 +2123,19 @@ Parser.prototype.parseTag = function() {
 // + Since until 2038 those bits will be filled by zeros we can ignore them.
 Parser.prototype.parseLongDateTime = function() {
     var v = exports.getULong(this.data, this.offset + this.relativeOffset + 4);
-    // Substract seconds between 01/01/1904 and 01/01/1970
+    // Subtract seconds between 01/01/1904 and 01/01/1970
     // to convert Apple Mac timstamp to Standard Unix timestamp
     v -= 2082844800;
     this.relativeOffset += 8;
     return v;
 };
 
-Parser.prototype.parseFixed = function() {
-    var v = exports.getULong(this.data, this.offset + this.relativeOffset);
-    this.relativeOffset += 4;
-    return v / 65536;
-};
-
 Parser.prototype.parseVersion = function() {
-    var major = exports.getUShort(this.data, this.offset + this.relativeOffset);
+    var major = getUShort(this.data, this.offset + this.relativeOffset);
 
     // How to interpret the minor version is very vague in the spec. 0x5000 is 5, 0x1000 is 1
     // This returns the correct number if minor = 0xN000 where N is 0-9
-    var minor = exports.getUShort(this.data, this.offset + this.relativeOffset + 2);
+    var minor = getUShort(this.data, this.offset + this.relativeOffset + 2);
     this.relativeOffset += 4;
     return major + minor / 0x1000 / 10;
 };
@@ -1949,9 +2148,260 @@ Parser.prototype.skip = function(type, amount) {
     this.relativeOffset += typeOffsets[type] * amount;
 };
 
+///// Parsing lists and records ///////////////////////////////
+
+// Parse a list of 16 bit integers. The length of the list can be read on the stream
+// or provided as an argument.
+Parser.prototype.parseOffset16List =
+Parser.prototype.parseUShortList = function(count) {
+    if (count === undefined) { count = this.parseUShort(); }
+    var offsets = new Array(count);
+    var dataView = this.data;
+    var offset = this.offset + this.relativeOffset;
+    for (var i = 0; i < count; i++) {
+        offsets[i] = dataView.getUint16(offset);
+        offset += 2;
+    }
+
+    this.relativeOffset += count * 2;
+    return offsets;
+};
+
+/**
+ * Parse a list of items.
+ * Record count is optional, if omitted it is read from the stream.
+ * itemCallback is one of the Parser methods.
+ */
+Parser.prototype.parseList = function(count, itemCallback) {
+    if (!itemCallback) {
+        itemCallback = count;
+        count = this.parseUShort();
+    }
+    var list = new Array(count);
+    for (var i = 0; i < count; i++) {
+        list[i] = itemCallback.call(this);
+    }
+    return list;
+};
+
+/**
+ * Parse a list of records.
+ * Record count is optional, if omitted it is read from the stream.
+ * Example of recordDescription: { sequenceIndex: Parser.uShort, lookupListIndex: Parser.uShort }
+ */
+Parser.prototype.parseRecordList = function(count, recordDescription) {
+    // If the count argument is absent, read it in the stream.
+    if (!recordDescription) {
+        recordDescription = count;
+        count = this.parseUShort();
+    }
+    var records = new Array(count);
+    var fields = Object.keys(recordDescription);
+    for (var i = 0; i < count; i++) {
+        var rec = {};
+        for (var j = 0; j < fields.length; j++) {
+            var fieldName = fields[j];
+            var fieldType = recordDescription[fieldName];
+            rec[fieldName] = fieldType.call(this);
+        }
+        records[i] = rec;
+    }
+    return records;
+};
+
+// Parse a data structure into an object
+// Example of description: { sequenceIndex: Parser.uShort, lookupListIndex: Parser.uShort }
+Parser.prototype.parseStruct = function(description) {
+    if (typeof description === 'function') {
+        return description.call(this);
+    } else {
+        var fields = Object.keys(description);
+        var struct = {};
+        for (var j = 0; j < fields.length; j++) {
+            var fieldName = fields[j];
+            var fieldType = description[fieldName];
+            struct[fieldName] = fieldType.call(this);
+        }
+        return struct;
+    }
+};
+
+Parser.prototype.parsePointer = function(description) {
+    var structOffset = this.parseOffset16();
+    if (structOffset > 0) {                         // NULL offset => return indefined
+        return new Parser(this.data, this.offset + structOffset).parseStruct(description);
+    }
+};
+
+/**
+ * Parse a list of offsets to lists of 16-bit integers,
+ * or a list of offsets to lists of offsets to any kind of items.
+ * If itemCallback is not provided, a list of list of UShort is assumed.
+ * If provided, itemCallback is called on each item and must parse the item.
+ * See examples in tables/gsub.js
+ */
+Parser.prototype.parseListOfLists = function(itemCallback) {
+    var offsets = this.parseOffset16List();
+    var count = offsets.length;
+    var relativeOffset = this.relativeOffset;
+    var list = new Array(count);
+    for (var i = 0; i < count; i++) {
+        var start = offsets[i];
+        if (start === 0) {                  // NULL offset
+            list[i] = undefined;            // Add i as owned property to list. Convenient with assert.
+            continue;
+        }
+        this.relativeOffset = start;
+        if (itemCallback) {
+            var subOffsets = this.parseOffset16List();
+            var subList = new Array(subOffsets.length);
+            for (var j = 0; j < subOffsets.length; j++) {
+                this.relativeOffset = start + subOffsets[j];
+                subList[j] = itemCallback.call(this);
+            }
+            list[i] = subList;
+        } else {
+            list[i] = this.parseUShortList();
+        }
+    }
+    this.relativeOffset = relativeOffset;
+    return list;
+};
+
+///// Complex tables parsing //////////////////////////////////
+
+// Parse a coverage table in a GSUB, GPOS or GDEF table.
+// https://www.microsoft.com/typography/OTSPEC/chapter2.htm
+// parser.offset must point to the start of the table containing the coverage.
+Parser.prototype.parseCoverage = function() {
+    var startOffset = this.offset + this.relativeOffset;
+    var format = this.parseUShort();
+    var count = this.parseUShort();
+    if (format === 1) {
+        return {
+            format: 1,
+            glyphs: this.parseUShortList(count)
+        };
+    } else if (format === 2) {
+        var ranges = new Array(count);
+        for (var i = 0; i < count; i++) {
+            ranges[i] = {
+                start: this.parseUShort(),
+                end: this.parseUShort(),
+                index: this.parseUShort()
+            };
+        }
+        return {
+            format: 2,
+            ranges: ranges
+        };
+    }
+    check.assert(false, '0x' + startOffset.toString(16) + ': Coverage format must be 1 or 2.');
+};
+
+// Parse a Class Definition Table in a GSUB, GPOS or GDEF table.
+// https://www.microsoft.com/typography/OTSPEC/chapter2.htm
+Parser.prototype.parseClassDef = function() {
+    var startOffset = this.offset + this.relativeOffset;
+    var format = this.parseUShort();
+    if (format === 1) {
+        return {
+            format: 1,
+            startGlyph: this.parseUShort(),
+            classes: this.parseUShortList()
+        };
+    } else if (format === 2) {
+        return {
+            format: 2,
+            ranges: this.parseRecordList({
+                start: Parser.uShort,
+                end: Parser.uShort,
+                classId: Parser.uShort
+            })
+        };
+    }
+    check.assert(false, '0x' + startOffset.toString(16) + ': ClassDef format must be 1 or 2.');
+};
+
+///// Static methods ///////////////////////////////////
+// These convenience methods can be used as callbacks and should be called with "this" context set to a Parser instance.
+
+Parser.list = function(count, itemCallback) {
+    return function() {
+        return this.parseList(count, itemCallback);
+    };
+};
+
+Parser.recordList = function(count, recordDescription) {
+    return function() {
+        return this.parseRecordList(count, recordDescription);
+    };
+};
+
+Parser.pointer = function(description) {
+    return function() {
+        return this.parsePointer(description);
+    };
+};
+
+Parser.tag = Parser.prototype.parseTag;
+Parser.byte = Parser.prototype.parseByte;
+Parser.uShort = Parser.offset16 = Parser.prototype.parseUShort;
+Parser.uShortList = Parser.prototype.parseUShortList;
+Parser.struct = Parser.prototype.parseStruct;
+Parser.coverage = Parser.prototype.parseCoverage;
+Parser.classDef = Parser.prototype.parseClassDef;
+
+///// Script, Feature, Lookup lists ///////////////////////////////////////////////
+// https://www.microsoft.com/typography/OTSPEC/chapter2.htm
+
+var langSysTable = {
+    reserved: Parser.uShort,
+    reqFeatureIndex: Parser.uShort,
+    featureIndexes: Parser.uShortList
+};
+
+Parser.prototype.parseScriptList = function() {
+    return this.parsePointer(Parser.recordList({
+        tag: Parser.tag,
+        script: Parser.pointer({
+            defaultLangSys: Parser.pointer(langSysTable),
+            langSysRecords: Parser.recordList({
+                tag: Parser.tag,
+                langSys: Parser.pointer(langSysTable)
+            })
+        })
+    }));
+};
+
+Parser.prototype.parseFeatureList = function() {
+    return this.parsePointer(Parser.recordList({
+        tag: Parser.tag,
+        feature: Parser.pointer({
+            featureParams: Parser.offset16,
+            lookupListIndexes: Parser.uShortList
+        })
+    }));
+};
+
+Parser.prototype.parseLookupList = function(lookupTableParsers) {
+    return this.parsePointer(Parser.list(Parser.pointer(function() {
+        var lookupType = this.parseUShort();
+        check.argument(1 <= lookupType && lookupType <= 8, 'GSUB lookup type ' + lookupType + ' unknown.');
+        var lookupFlag = this.parseUShort();
+        var useMarkFilteringSet = lookupFlag & 0x10;
+        return {
+            lookupType: lookupType,
+            lookupFlag: lookupFlag,
+            subtables: this.parseList(Parser.pointer(lookupTableParsers[lookupType])),
+            markFilteringSet: useMarkFilteringSet ? this.parseUShort() : undefined
+        };
+    })));
+};
+
 exports.Parser = Parser;
 
-},{}],10:[function(require,module,exports){
+},{"./check":2}],11:[function(require,module,exports){
 // Geometric objects
 
 'use strict';
@@ -2121,7 +2571,168 @@ Path.prototype.toSVG = function(decimalPlaces) {
 
 exports.Path = Path;
 
-},{}],11:[function(require,module,exports){
+},{}],12:[function(require,module,exports){
+// The Substitution object provides utility methods to manipulate
+// the GSUB substitution table.
+
+'use strict';
+
+var check = require('./check');
+var Layout = require('./layout');
+
+var Substitution = function(font) {
+    this.font = font;
+};
+
+// Check if 2 arrays of primitives are equal.
+function arraysEqual(ar1, ar2) {
+    var n = ar1.length;
+    if (n !== ar2.length) { return false; }
+    for (var i = 0; i < n; i++) {
+        if (ar1[i] !== ar2[i]) { return false; }
+    }
+    return true;
+}
+
+Substitution.prototype = Layout;
+
+// Get or create the GSUB table.
+Substitution.prototype.getGsubTable = function(create) {
+    var gsub = this.font.tables.gsub;
+    if (!gsub && create) {
+        // Generate a default empty GSUB table with just a DFLT script and dflt lang sys.
+        this.font.tables.gsub = gsub = {
+            version: 1,
+            scripts: [{
+                tag: 'DFLT',
+                script: {
+                    defaultLangSys: { reserved: 0, reqFeatureIndex: 0xffff, featureIndexes: [] },
+                    langSysRecords: []
+                }
+            }],
+            features: [],
+            lookups: []
+        };
+    }
+    return gsub;
+};
+
+/**
+ * List all ligatures (lookup type 4) for a given script, language, and feature.
+ * The result is an array of ligature objects like { sub: [ids], by: id }
+ * @param {string} script
+ * @param {string} language
+ * @param {string} feature - 4-letter feature name (liga, rlig, dlig...)
+ */
+Substitution.prototype.getLigatures = function(script, language, feature) {
+    var lookupTable = this.getLookupTable(script, language, feature, 4);
+    if (!lookupTable) { return []; }
+    var subtable = lookupTable.subtables[0];
+    if (!subtable) { return []; }
+    var glyphs = this.expandCoverage(subtable.coverage);
+    var ligatureSets = subtable.ligatureSets;
+    var ligatures = [];
+    for (var i = 0; i < glyphs.length; i++) {
+        var startGlyph = glyphs[i];
+        var ligSet = ligatureSets[i];
+        for (var j = 0; j < ligSet.length; j++) {
+            var lig = ligSet[j];
+            ligatures.push({
+                sub: [startGlyph].concat(lig.components),
+                by: lig.ligGlyph
+            });
+        }
+    }
+    return ligatures;
+};
+
+/**
+ * Add a ligature (lookup type 4)
+ * Ligatures with more components must be stored ahead of those with fewer components in order to be found
+ * @param {string} [script='DFLT']
+ * @param {string} [language='DFLT']
+ * @param {object} ligature - { sub: [ids], by: id }
+ */
+Substitution.prototype.addLigature = function(script, language, feature, ligature) {
+    var lookupTable = this.getLookupTable(script, language, feature, 4, true);
+    var subtable = lookupTable.subtables[0];
+    if (!subtable) {
+        subtable = {                // lookup type 4 subtable, format 1, coverage format 1
+            substFormat: 1,
+            coverage: { format: 1, glyphs: [] },
+            ligatureSets: []
+        };
+        lookupTable.subtables[0] = subtable;
+    }
+    check.assert(subtable.coverage.format === 1, 'Ligature: unable to modify coverage table format ' + subtable.coverage.format);
+    var coverageGlyph = ligature.sub[0];
+    var ligComponents = ligature.sub.slice(1);
+    var ligatureTable = {
+        ligGlyph: ligature.by,
+        components: ligComponents
+    };
+    var pos = this.binSearch(subtable.coverage.glyphs, coverageGlyph);
+    if (pos >= 0) {
+        // ligatureSet already exists
+        var ligatureSet = subtable.ligatureSets[pos];
+        for (var i = 0; i < ligatureSet.length; i++) {
+            // If ligature already exists, return.
+            if (arraysEqual(ligatureSet[i].components, ligComponents)) {
+                return;
+            }
+        }
+        // ligature does not exist: add it.
+        ligatureSet.push(ligatureTable);
+    } else {
+        // Create a new ligatureSet and add coverage for the first glyph.
+        pos = -1 - pos;
+        subtable.coverage.glyphs.splice(pos, 0, coverageGlyph);
+        subtable.ligatureSets.splice(pos, 0, [ligatureTable]);
+    }
+};
+
+/**
+ * List all feature data for a given script and language.
+ * @param {string} [script='DFLT']
+ * @param {string} [language='DFLT']
+ * @param {string} feature - 4-letter feature name
+ */
+Substitution.prototype.getFeature = function(script, language, feature) {
+    if (arguments.length === 1) {
+        feature = arguments[0];
+        script = language = 'DFLT';
+    }
+    switch (feature) {
+        case 'dlig':
+        case 'liga':
+        case 'rlig': return this.getLigatures(script, language, feature);
+    }
+};
+
+/**
+ * Add a substitution to a feature for a given script and language.
+ * The result is an array of ligature objects like { sub: [ids], by: id }
+ * @param {string} [script='DFLT']
+ * @param {string} [language='DFLT']
+ * @param {string} feature - 4-letter feature name
+ * @param {object} sub - the substitution to add
+ */
+Substitution.prototype.add = function(script, language, feature, sub) {
+    if (arguments.length === 2) {
+        feature = arguments[0];
+        sub = arguments[1];
+        script = language = 'DFLT';
+    }
+    switch (feature) {
+        case 'dlig':
+        case 'liga':
+        case 'rlig': return this.addLigature(script, language, feature, sub);
+    }
+};
+
+module.exports = Substitution;
+
+},{"./check":2,"./layout":8}],13:[function(require,module,exports){
 // Table metadata
 
 'use strict';
@@ -2160,7 +2771,7 @@ Table.prototype.sizeOf = function() {
 
 exports.Record = exports.Table = Table;
 
-},{"./types":29}],12:[function(require,module,exports){
+},{"./types":32}],14:[function(require,module,exports){
 // The `CFF` table contains the glyph outlines in PostScript format.
 // https://www.microsoft.com/typography/OTSPEC/cff.htm
 // http://download.microsoft.com/download/8/0/1/801a191c-029d-4af3-9642-555f6fe514ee/cff.pdf
@@ -3274,7 +3885,7 @@ function makeCFFTable(glyphs, options) {
 exports.parse = parseCFFTable;
 exports.make = makeCFFTable;
 
-},{"../encoding":4,"../glyphset":7,"../parse":9,"../path":10,"../table":11}],13:[function(require,module,exports){
+},{"../encoding":4,"../glyphset":7,"../parse":10,"../path":11,"../table":13}],15:[function(require,module,exports){
 // The `cmap` table stores the mappings from characters to glyphs.
 // https://www.microsoft.com/typography/OTSPEC/cmap.htm
 
@@ -3462,7 +4073,7 @@ function makeCmapTable(glyphs) {
 exports.parse = parseCmapTable;
 exports.make = makeCmapTable;
 
-},{"../check":2,"../parse":9,"../table":11}],14:[function(require,module,exports){
+},{"../check":2,"../parse":10,"../table":13}],16:[function(require,module,exports){
 // The `fvar` table stores font variation axes and instances.
 // https://developer.apple.com/fonts/TrueType-Reference-Manual/RM06/Chap6fvar.html
 
@@ -3603,7 +4214,7 @@ function parseFvarTable(data, start, names) {
 exports.make = makeFvarTable;
 exports.parse = parseFvarTable;
 
-},{"../check":2,"../parse":9,"../table":11}],15:[function(require,module,exports){
+},{"../check":2,"../parse":10,"../table":13}],17:[function(require,module,exports){
 // The `glyf` table describes the glyphs in TrueType outline format.
 // http://www.microsoft.com/typography/otspec/glyf.htm
 
@@ -3906,7 +4517,7 @@ function parseGlyfTable(data, start, loca, font) {
 
 exports.parse = parseGlyfTable;
 
-},{"../check":2,"../glyphset":7,"../parse":9,"../path":10}],16:[function(require,module,exports){
+},{"../check":2,"../glyphset":7,"../parse":10,"../path":11}],18:[function(require,module,exports){
 // The `GPOS` table contains kerning pairs, among other things.
 // https://www.microsoft.com/typography/OTSPEC/gpos.htm
 
@@ -4144,7 +4755,213 @@ function parseGposTable(data, start, font) {
 
 exports.parse = parseGposTable;
 
-},{"../check":2,"../parse":9}],17:[function(require,module,exports){
+},{"../check":2,"../parse":10}],19:[function(require,module,exports){
+// The `GSUB` table contains ligatures, among other things.
+// https://www.microsoft.com/typography/OTSPEC/gsub.htm
+
+'use strict';
+
+var check = require('../check');
+var Parser = require('../parse').Parser;
+var subtableParsers = new Array(9);         // subtableParsers[0] is unused
+
+// https://www.microsoft.com/typography/OTSPEC/GSUB.htm#SS
+subtableParsers[1] = function parseLookup1() {
+    var start = this.offset + this.relativeOffset;
+    var substFormat = this.parseUShort();
+    if (substFormat === 1) {
+        return {
+            substFormat: 1,
+            coverage: this.parsePointer(Parser.coverage),
+            deltaGlyphId: this.parseUShort()
+        };
+    } else if (substFormat === 2) {
+        return {
+            substFormat: 2,
+            coverage: this.parsePointer(Parser.coverage),
+            substitute: this.parseOffset16List()
+        };
+    }
+    check.assert(false, '0x' + start.toString(16) + ': lookup type 1 format must be 1 or 2.');
+};
+
+// https://www.microsoft.com/typography/OTSPEC/GSUB.htm#MS
+subtableParsers[2] = function parseLookup2() {
+    var substFormat = this.parseUShort();
+    check.argument(substFormat === 1, 'GSUB Multiple Substitution Subtable identifier-format must be 1');
+    return {
+        substFormat: substFormat,
+        coverage: this.parsePointer(Parser.coverage),
+        sequences: this.parseListOfLists()
+    };
+};
+
+// https://www.microsoft.com/typography/OTSPEC/GSUB.htm#AS
+subtableParsers[3] = function parseLookup3() {
+    var substFormat = this.parseUShort();
+    check.argument(substFormat === 1, 'GSUB Alternate Substitution Subtable identifier-format must be 1');
+    return {
+        substFormat: substFormat,
+        coverage: this.parsePointer(Parser.coverage),
+        alternateSets: this.parseListOfLists()
+    };
+};
+
+// https://www.microsoft.com/typography/OTSPEC/GSUB.htm#LS
+subtableParsers[4] = function parseLookup4() {
+    var substFormat = this.parseUShort();
+    check.argument(substFormat === 1, 'GSUB ligature table identifier-format must be 1');
+    return {
+        substFormat: substFormat,
+        coverage: this.parsePointer(Parser.coverage),
+        ligatureSets: this.parseListOfLists(function() {
+            return {
+                ligGlyph: this.parseUShort(),
+                components: this.parseUShortList(this.parseUShort() - 1)
+            };
+        })
+    };
+};
+
+var lookupRecordDesc = {
+    sequenceIndex: Parser.uShort,
+    lookupListIndex: Parser.uShort
+};
+
+// https://www.microsoft.com/typography/OTSPEC/GSUB.htm#CSF
+subtableParsers[5] = function parseLookup5() {
+    var start = this.offset + this.relativeOffset;
+    var substFormat = this.parseUShort();
+
+    if (substFormat === 1) {
+        return {
+            substFormat: substFormat,
+            coverage: this.parsePointer(Parser.coverage),
+            ruleSets: this.parseListOfLists(function() {
+                var glyphCount = this.parseUShort();
+                var substCount = this.parseUShort();
+                return {
+                    input: this.parseUShortList(glyphCount - 1),
+                    lookupRecords: this.parseRecordList(substCount, lookupRecordDesc)
+                };
+            })
+        };
+    } else if (substFormat === 2) {
+        return {
+            substFormat: substFormat,
+            coverage: this.parsePointer(Parser.coverage),
+            classDef: this.parsePointer(Parser.classDef),
+            classSets: this.parseListOfLists(function() {
+                var glyphCount = this.parseUShort();
+                var substCount = this.parseUShort();
+                return {
+                    classes: this.parseUShortList(glyphCount - 1),
+                    lookupRecords: this.parseRecordList(substCount, lookupRecordDesc)
+                };
+            })
+        };
+    } else if (substFormat === 3) {
+        var glyphCount = this.parseUShort();
+        var substCount = this.parseUShort();
+        return {
+            substFormat: substFormat,
+            coverages: this.parseList(glyphCount, Parser.pointer(Parser.coverage)),
+            lookupRecords: this.parseRecordList(substCount, lookupRecordDesc)
+        };
+    }
+    check.assert(false, '0x' + start.toString(16) + ': lookup type 5 format must be 1, 2 or 3.');
+};
+
+// https://www.microsoft.com/typography/OTSPEC/GSUB.htm#CC
+subtableParsers[6] = function parseLookup6() {
+    // TODO add automated tests for lookup 6 : no examples in the MS doc.
+    var start = this.offset + this.relativeOffset;
+    var substFormat = this.parseUShort();
+    if (substFormat === 1) {
+        return {
+            substFormat: 1,
+            coverage: this.parsePointer(Parser.coverage),
+            chainRuleSets: this.parseListOfLists(function() {
+                return {
+                    backtrack: this.parseUShortList(),
+                    input: this.parseUShortList(this.parseShort() - 1),
+                    lookahead: this.parseUShortList(),
+                    lookupRecords: this.parseRecordList(lookupRecordDesc)
+                };
+            })
+        };
+    } else if (substFormat === 2) {
+        return {
+            substFormat: 2,
+            coverage: this.parsePointer(Parser.coverage),
+            backtrackClassDef: this.parsePointer(Parser.classDef),
+            inputClassDef: this.parsePointer(Parser.classDef),
+            lookaheadClassDef: this.parsePointer(Parser.classDef),
+            chainClassSet: this.parseListOfLists(function() {
+                return {
+                    backtrack: this.parseUShortList(),
+                    input: this.parseUShortList(this.parseShort() - 1),
+                    lookahead: this.parseUShortList(),
+                    lookupRecords: this.parseRecordList(lookupRecordDesc)
+                };
+            })
+        };
+    } else if (substFormat === 3) {
+        return {
+            substFormat: 3,
+            backtrackCoverage: this.parseList(Parser.pointer(Parser.coverage)),
+            inputCoverage: this.parseList(Parser.pointer(Parser.coverage)),
+            lookaheadCoverage: this.parseList(Parser.pointer(Parser.coverage)),
+            lookupRecords: this.parseRecordList(lookupRecordDesc)
+        };
+    }
+    check.assert(false, '0x' + start.toString(16) + ': lookup type 6 format must be 1, 2 or 3.');
+};
+
+// https://www.microsoft.com/typography/OTSPEC/GSUB.htm#ES
+subtableParsers[7] = function parseLookup7() {
+    // Extension Substitution subtable
+    var substFormat = this.parseUShort();
+    check.argument(substFormat === 1, 'GSUB Extension Substitution subtable identifier-format must be 1');
+    var extensionLookupType = this.parseUShort();
+    var extensionParser = new Parser(this.data, this.offset + this.parseULong());
+    return {
+        substFormat: 1,
+        lookupType: extensionLookupType,
+        extension: subtableParsers[extensionLookupType].call(extensionParser)
+    };
+};
+
+// https://www.microsoft.com/typography/OTSPEC/GSUB.htm#RCCS
+subtableParsers[8] = function parseLookup8() {
+    var substFormat = this.parseUShort();
+    check.argument(substFormat === 1, 'GSUB Reverse Chaining Contextual Single Substitution Subtable identifier-format must be 1');
+    return {
+        substFormat: substFormat,
+        coverage: this.parsePointer(Parser.coverage),
+        backtrackCoverage: this.parseList(Parser.pointer(Parser.coverage)),
+        lookaheadCoverage: this.parseList(Parser.pointer(Parser.coverage)),
+        substitutes: this.parseUShortList()
+    };
+};
+
+// https://www.microsoft.com/typography/OTSPEC/gsub.htm
+function parseGsubTable(data, start) {
+    start = start || 0;
+    var p = new Parser(data, start);
+    var tableVersion = p.parseVersion();
+    check.argument(tableVersion === 1, 'Unsupported GSUB table version.');
+    return {
+        version: tableVersion,
+        scripts: p.parseScriptList(),
+        features: p.parseFeatureList(),
+        lookups: p.parseLookupList(subtableParsers)
+    };
+}
+
+exports.parse = parseGsubTable;
+
+},{"../check":2,"../parse":10}],20:[function(require,module,exports){
 // The `head` table contains global information about the font.
 // https://www.microsoft.com/typography/OTSPEC/head.htm
 
@@ -4212,7 +5029,7 @@ function makeHeadTable(options) {
 exports.parse = parseHeadTable;
 exports.make = makeHeadTable;
 
-},{"../check":2,"../parse":9,"../table":11}],18:[function(require,module,exports){
+},{"../check":2,"../parse":10,"../table":13}],21:[function(require,module,exports){
 // The `hhea` table contains information for horizontal layout.
 // https://www.microsoft.com/typography/OTSPEC/hhea.htm
 
@@ -4267,7 +5084,7 @@ function makeHheaTable(options) {
 exports.parse = parseHheaTable;
 exports.make = makeHheaTable;
 
-},{"../parse":9,"../table":11}],19:[function(require,module,exports){
+},{"../parse":10,"../table":13}],22:[function(require,module,exports){
 // The `hmtx` table contains the horizontal metrics for all glyphs.
 // https://www.microsoft.com/typography/OTSPEC/hmtx.htm
 
@@ -4311,7 +5128,7 @@ function makeHmtxTable(glyphs) {
 exports.parse = parseHmtxTable;
 exports.make = makeHmtxTable;
 
-},{"../parse":9,"../table":11}],20:[function(require,module,exports){
+},{"../parse":10,"../table":13}],23:[function(require,module,exports){
 // The `kern` table contains kerning pairs.
 // Note that some fonts use the GPOS OpenType layout table to specify kerning.
 // https://www.microsoft.com/typography/OTSPEC/kern.htm
@@ -4348,7 +5165,7 @@ function parseKernTable(data, start) {
 
 exports.parse = parseKernTable;
 
-},{"../check":2,"../parse":9}],21:[function(require,module,exports){
+},{"../check":2,"../parse":10}],24:[function(require,module,exports){
 // The `loca` table stores the offsets to the locations of the glyphs in the font.
 // https://www.microsoft.com/typography/OTSPEC/loca.htm
 
@@ -4383,7 +5200,7 @@ function parseLocaTable(data, start, numGlyphs, shortVersion) {
 
 exports.parse = parseLocaTable;
 
-},{"../parse":9}],22:[function(require,module,exports){
+},{"../parse":10}],25:[function(require,module,exports){
 // The `ltag` table stores IETF BCP-47 language tags. It allows supporting
 // languages for which TrueType does not assign a numeric code.
 // https://developer.apple.com/fonts/TrueType-Reference-Manual/RM06/Chap6ltag.html
@@ -4446,7 +5263,7 @@ function parseLtagTable(data, start) {
 exports.make = makeLtagTable;
 exports.parse = parseLtagTable;
 
-},{"../check":2,"../parse":9,"../table":11}],23:[function(require,module,exports){
+},{"../check":2,"../parse":10,"../table":13}],26:[function(require,module,exports){
 // The `maxp` table establishes the memory requirements for the font.
 // We need it just to get the number of glyphs in the font.
 // https://www.microsoft.com/typography/OTSPEC/maxp.htm
@@ -4491,7 +5308,7 @@ function makeMaxpTable(numGlyphs) {
 exports.parse = parseMaxpTable;
 exports.make = makeMaxpTable;
 
-},{"../parse":9,"../table":11}],24:[function(require,module,exports){
+},{"../parse":10,"../table":13}],27:[function(require,module,exports){
 // The `GPOS` table contains kerning pairs, among other things.
 // https://www.microsoft.com/typography/OTSPEC/gpos.htm
 
@@ -4554,7 +5371,7 @@ function makeMetaTable(tags) {
 exports.parse = parseMetaTable;
 exports.make = makeMetaTable;
 
-},{"../check":2,"../parse":9,"../table":11,"../types":29}],25:[function(require,module,exports){
+},{"../check":2,"../parse":10,"../table":13,"../types":32}],28:[function(require,module,exports){
 // The `name` naming table.
 // https://www.microsoft.com/typography/OTSPEC/name.htm
 
@@ -5386,7 +6203,7 @@ function makeNameTable(names, ltag) {
 exports.parse = parseNameTable;
 exports.make = makeNameTable;
 
-},{"../parse":9,"../table":11,"../types":29}],26:[function(require,module,exports){
+},{"../parse":10,"../table":13,"../types":32}],29:[function(require,module,exports){
 // The `OS/2` table contains metrics required in OpenType fonts.
 // https://www.microsoft.com/typography/OTSPEC/os2.htm
 
@@ -5642,7 +6459,7 @@ exports.getUnicodeRange = getUnicodeRange;
 exports.parse = parseOS2Table;
 exports.make = makeOS2Table;
 
-},{"../parse":9,"../table":11}],27:[function(require,module,exports){
+},{"../parse":10,"../table":13}],30:[function(require,module,exports){
 // The `post` table stores additional PostScript information, such as glyph names.
 // https://www.microsoft.com/typography/OTSPEC/post.htm
 
@@ -5715,7 +6532,7 @@ function makePostTable() {
 exports.parse = parsePostTable;
 exports.make = makePostTable;
 
-},{"../encoding":4,"../parse":9,"../table":11}],28:[function(require,module,exports){
+},{"../encoding":4,"../parse":10,"../table":13}],31:[function(require,module,exports){
 // The `sfnt` wrapper provides organization for the tables in the font.
 // It is the top-level data structure in a font.
 // https://www.microsoft.com/typography/OTSPEC/otff.htm
@@ -6054,7 +6871,7 @@ exports.computeCheckSum = computeCheckSum;
 exports.make = makeSfntTable;
 exports.fontToTable = fontToSfntTable;
 
-},{"../check":2,"../table":11,"./cff":12,"./cmap":13,"./head":17,"./hhea":18,"./hmtx":19,"./ltag":22,"./maxp":23,"./meta":24,"./name":25,"./os2":26,"./post":27}],29:[function(require,module,exports){
+},{"../check":2,"../table":13,"./cff":14,"./cmap":15,"./head":20,"./hhea":21,"./hmtx":22,"./ltag":25,"./maxp":26,"./meta":27,"./name":28,"./os2":29,"./post":30}],32:[function(require,module,exports){
 // Data types used in the OpenType font file.
 // All OpenType fonts use Motorola-style byte ordering (Big Endian)
 
@@ -6482,18 +7299,16 @@ sizeOf.MACSTRING = function(str, encoding) {
 encode.INDEX = function(l) {
     var i;
     //var offset, offsets, offsetEncoder, encodedOffsets, encodedOffset, data,
-    //    dataSize, i, v;
+    //    i, v;
     // Because we have to know which data type to use to encode the offsets,
     // we have to go through the values twice: once to encode the data and
     // calculate the offets, then again to encode the offsets using the fitting data type.
     var offset = 1; // First offset is always 1.
     var offsets = [offset];
     var data = [];
-    var dataSize = 0;
     for (i = 0; i < l.length; i += 1) {
         var v = encode.OBJECT(l[i]);
         Array.prototype.push.apply(data, v);
-        dataSize += v.length;
         offset += v.length;
         offsets.push(offset);
     }
@@ -6503,7 +7318,7 @@ encode.INDEX = function(l) {
     }
 
     var encodedOffsets = [];
-    var offSize = (1 + Math.floor(Math.log(dataSize) / Math.log(2)) / 8) | 0;
+    var offSize = (1 + Math.floor(Math.log(offset) / Math.log(2)) / 8) | 0;
     var offsetEncoder = [undefined, encode.BYTE, encode.USHORT, encode.UINT24, encode.ULONG][offSize];
     for (i = 0; i < offsets.length; i += 1) {
         var encodedOffset = offsetEncoder(offsets[i]);
@@ -6710,7 +7525,7 @@ exports.decode = decode;
 exports.encode = encode;
 exports.sizeOf = sizeOf;
 
-},{"./check":2}],30:[function(require,module,exports){
+},{"./check":2}],33:[function(require,module,exports){
 'use strict';
 
 exports.isBrowser = function() {
@@ -6747,5 +7562,5 @@ exports.checkArgument = function(expression, message) {
     }
 };
 
-},{}]},{},[8])(8)
+},{}]},{},[9])(9)
 });
