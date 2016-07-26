@@ -19,6 +19,7 @@ var maxp = require('./maxp');
 var _name = require('./name');
 var os2 = require('./os2');
 var post = require('./post');
+var gsub = require('./gsub');
 var meta = require('./meta');
 
 function log2(v) {
@@ -305,6 +306,10 @@ function fontToSfntTable(font) {
     var tables = [headTable, hheaTable, maxpTable, os2Table, nameTable, cmapTable, postTable, cffTable, hmtxTable];
     if (ltagTable) {
         tables.push(ltagTable);
+    }
+    // Optional tables
+    if (font.tables.gsub) {
+        tables.push(gsub.make(font.tables.gsub));
     }
     if (metaTable) {
         tables.push(metaTable);
