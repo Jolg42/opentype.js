@@ -24,18 +24,39 @@ function getPathDefinition(glyph, path) {
         }
     };
 }
+/**
+ * @typedef GlyphOptions
+ * @type Object
+ * @property {string} [name] - The glyph name
+ * @property {number} [unicode]
+ * @property {Array} [unicodes]
+ * @property {number} [xMin]
+ * @property {number} [yMin]
+ * @property {number} [xMax]
+ * @property {number} [yMax]
+ * @property {number} [advanceWidth]
+ */
 
 // A Glyph is an individual mark that often corresponds to a character.
 // Some glyphs, such as ligatures, are a combination of many characters.
 // Glyphs are the basic building blocks of a font.
 //
 // The `Glyph` class contains utility methods for drawing the path and its points.
+/**
+ * @exports opentype.Glyph
+ * @class
+ * @param {GlyphOptions}
+ * @constructor
+ */
 function Glyph(options) {
     // By putting all the code on a prototype function (which is only declared once)
     // we reduce the memory requirements for larger fonts by some 2%
     this.bindConstructorValues(options);
 }
 
+/**
+ * @param  {GlyphOptions}
+ */
 Glyph.prototype.bindConstructorValues = function(options) {
     this.index = options.index || 0;
 
@@ -76,6 +97,9 @@ Glyph.prototype.bindConstructorValues = function(options) {
     Object.defineProperty(this, 'path', getPathDefinition(this, options.path));
 };
 
+/**
+ * @param {number}
+ */
 Glyph.prototype.addUnicode = function(unicode) {
     if (this.unicodes.length === 0) {
         this.unicode = unicode;
@@ -84,12 +108,14 @@ Glyph.prototype.addUnicode = function(unicode) {
     this.unicodes.push(unicode);
 };
 
-// Convert the glyph to a Path we can draw on a drawing context.
-//
-// x - Horizontal position of the glyph. (default: 0)
-// y - Vertical position of the *baseline* of the glyph. (default: 0)
-// fontSize - Font size, in pixels (default: 72).
-// options - xScale and yScale to strech the glyph.
+/**
+ * Convert the glyph to a Path we can draw on a drawing context.
+ * @param  {number} [x=0] - Horizontal position of the beginning of the text.
+ * @param  {number} [y=0] - Vertical position of the *baseline* of the text.
+ * @param  {number} [fontSize=72] - Font size in pixels. We scale the glyph units by `1 / unitsPerEm * fontSize`.
+ * @param  {Object=} options - xScale, yScale to strech the glyph.
+ * @return {opentype.Path}
+ */
 Glyph.prototype.getPath = function(x, y, fontSize, options) {
     x = x !== undefined ? x : 0;
     y = y !== undefined ? y : 0;
@@ -122,9 +148,12 @@ Glyph.prototype.getPath = function(x, y, fontSize, options) {
     return p;
 };
 
-// Split the glyph into contours.
-// This function is here for backwards compatibility, and to
-// provide raw access to the TrueType glyph outlines.
+/**
+ * Split the glyph into contours.
+ * This function is here for backwards compatibility, and to
+ * provide raw access to the TrueType glyph outlines.
+ * @return {Array}
+ */
 Glyph.prototype.getContours = function() {
     if (this.points === undefined) {
         return [];
@@ -145,7 +174,10 @@ Glyph.prototype.getContours = function() {
     return contours;
 };
 
-// Calculate the xMin/yMin/xMax/yMax/lsb/rsb for a Glyph.
+/**
+ * Calculate the xMin/yMin/xMax/yMax/lsb/rsb for a Glyph.
+ * @return {Object}
+ */
 Glyph.prototype.getMetrics = function() {
     var commands = this.path.commands;
     var xCoords = [];
@@ -196,24 +228,26 @@ Glyph.prototype.getMetrics = function() {
     return metrics;
 };
 
-// Draw the glyph on the given context.
-//
-// ctx - The drawing context.
-// x - Horizontal position of the glyph. (default: 0)
-// y - Vertical position of the *baseline* of the glyph. (default: 0)
-// fontSize - Font size, in pixels (default: 72).
-// options - xScale, yScale to strech the glyph
+/**
+ * Draw the glyph on the given context.
+ * @param  {CanvasRenderingContext2D} ctx - A 2D drawing context, like Canvas.
+ * @param  {number} [x=0] - Horizontal position of the beginning of the text.
+ * @param  {number} [y=0] - Vertical position of the *baseline* of the text.
+ * @param  {number} [fontSize=72] - Font size in pixels. We scale the glyph units by `1 / unitsPerEm * fontSize`.
+ * @param  {Object=} options - xScale, yScale to strech the glyph.
+ */
 Glyph.prototype.draw = function(ctx, x, y, fontSize, options) {
     this.getPath(x, y, fontSize, options).draw(ctx);
 };
 
-// Draw the points of the glyph.
-// On-curve points will be drawn in blue, off-curve points will be drawn in red.
-//
-// ctx - The drawing context.
-// x - Horizontal position of the glyph. (default: 0)
-// y - Vertical position of the *baseline* of the glyph. (default: 0)
-// fontSize - Font size, in pixels (default: 72).
+/**
+ * Draw the points of the glyph.
+ * On-curve points will be drawn in blue, off-curve points will be drawn in red.
+ * @param  {CanvasRenderingContext2D} ctx - A 2D drawing context, like Canvas.
+ * @param  {number} [x=0] - Horizontal position of the beginning of the text.
+ * @param  {number} [y=0] - Vertical position of the *baseline* of the text.
+ * @param  {number} [fontSize=72] - Font size in pixels. We scale the glyph units by `1 / unitsPerEm * fontSize`.
+ */
 Glyph.prototype.drawPoints = function(ctx, x, y, fontSize) {
 
     function drawCircles(l, x, y, scale) {
@@ -257,15 +291,16 @@ Glyph.prototype.drawPoints = function(ctx, x, y, fontSize) {
     drawCircles(redCircles, x, y, scale);
 };
 
-// Draw lines indicating important font measurements.
-// Black lines indicate the origin of the coordinate system (point 0,0).
-// Blue lines indicate the glyph bounding box.
-// Green line indicates the advance width of the glyph.
-//
-// ctx - The drawing context.
-// x - Horizontal position of the glyph. (default: 0)
-// y - Vertical position of the *baseline* of the glyph. (default: 0)
-// fontSize - Font size, in pixels (default: 72).
+/**
+ * Draw lines indicating important font measurements.
+ * Black lines indicate the origin of the coordinate system (point 0,0).
+ * Blue lines indicate the glyph bounding box.
+ * Green line indicates the advance width of the glyph.
+ * @param  {CanvasRenderingContext2D} ctx - A 2D drawing context, like Canvas.
+ * @param  {number} [x=0] - Horizontal position of the beginning of the text.
+ * @param  {number} [y=0] - Vertical position of the *baseline* of the text.
+ * @param  {number} [fontSize=72] - Font size in pixels. We scale the glyph units by `1 / unitsPerEm * fontSize`.
+ */
 Glyph.prototype.drawMetrics = function(ctx, x, y, fontSize) {
     var scale;
     x = x !== undefined ? x : 0;

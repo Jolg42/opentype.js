@@ -3,6 +3,8 @@
 
 'use strict';
 
+var check = require('./check');
+
 function searchTag(arr, tag) {
     /* jshint bitwise: false */
     var imin = 0;
@@ -37,14 +39,38 @@ function binSearch(arr, value) {
     return -imin - 1;
 }
 
+/**
+ * @exports opentype.Layout
+ * @class
+ */
 var Layout = {
-    // Binary search an object by "tag" property
-    searchTag: searchTag,
 
-    // Binary search in a list of numbers
+    /**
+     * Binary search an object by "tag" property
+     * @instance
+     * @function searchTag
+     * @memberof opentype.Layout
+     * @param  {Array} arr
+     * @param  {string} tag
+     * @return {number}
+     */
+    searchTag: searchTag,
+    /**
+     * Binary search in a list of numbers
+     * @instance
+     * @function binSearch
+     * @memberof opentype.Layout
+     * @param  {Array} arr
+     * @param  {number} value
+     * @return {number}
+     */
     binSearch: binSearch,
 
-    // Returns all scripts in the substitution table.
+    /**
+     * Returns all scripts in the substitution table.
+     * @instance
+     * @return {Array}
+     */
     getScriptNames: function() {
         var gsub = this.getGsubTable();
         if (!gsub) { return []; }
@@ -55,6 +81,7 @@ var Layout = {
 
     /**
      * Returns all LangSysRecords in the given script.
+     * @instance
      * @param {string} script - Use 'DFLT' for default script
      * @param {boolean} create - forces the creation of this script table if it doesn't exist.
      */
@@ -81,6 +108,7 @@ var Layout = {
 
     /**
      * Returns a language system table
+     * @instance
      * @param {string} script - Use 'DFLT' for default script
      * @param {string} language - Use 'DFLT' for default language
      * @param {boolean} create - forces the creation of this langSysTable if it doesn't exist.
@@ -107,7 +135,7 @@ var Layout = {
 
     /**
      * Get a specific feature table.
-     *
+     * @instance
      * @param {string} script - Use 'DFLT' for default script
      * @param {string} language - Use 'DFLT' for default language
      * @param {string} feature - One of the codes listed at https://www.microsoft.com/typography/OTSPEC/featurelist.htm
@@ -128,11 +156,13 @@ var Layout = {
                 }
             }
             if (create) {
+                var index = allFeatures.length;
+                // Automatic ordering of features would require to shift feature indexes in the script list.
+                check.assert(index === 0 || feature >= allFeatures[index - 1].tag, 'Features must be added in alphabetical order.');
                 featureRecord = {
                     tag: feature,
                     feature: { params: 0, lookupListIndexes: [] }
                 };
-                var index = allFeatures.length;
                 allFeatures.push(featureRecord);
                 featIndexes.push(index);
                 return featureRecord.feature;
@@ -142,6 +172,7 @@ var Layout = {
 
     /**
      * Get the first lookup table of a given type for a script/language/feature.
+     * @instance
      * @param {string} script - Use 'DFLT' for default script
      * @param {string} language - Use 'DFLT' for default language
      * @param {string} feature - 4-letter feature code
@@ -180,6 +211,9 @@ var Layout = {
      * Returns the list of glyph indexes of a coverage table.
      * Format 1: the list is stored raw
      * Format 2: compact list as range records.
+     * @instance
+     * @param  {Object} coverageTable
+     * @return {Array}
      */
     expandCoverage: function(coverageTable) {
         if (coverageTable.format === 1) {
