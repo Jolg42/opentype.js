@@ -21,6 +21,7 @@ var os2 = require('./os2');
 var post = require('./post');
 var gsub = require('./gsub');
 var meta = require('./meta');
+var kern = require('./kern');
 
 function log2(v) {
     return Math.log(v) / Math.log(2) | 0;
@@ -302,6 +303,8 @@ function fontToSfntTable(font) {
 
     var metaTable = (font.metas && Object.keys(font.metas).length > 0) ? meta.make(font.metas) : undefined;
 
+    var kernTable = (font.kerningPairs && Object.keys(font.kerningPairs).length > 0) ? kern.make(font.kerningPairs) : undefined;
+
     // The order does not matter because makeSfntTable() will sort them.
     var tables = [headTable, hheaTable, maxpTable, os2Table, nameTable, cmapTable, postTable, cffTable, hmtxTable];
     if (ltagTable) {
@@ -313,6 +316,9 @@ function fontToSfntTable(font) {
     }
     if (metaTable) {
         tables.push(metaTable);
+    }
+    if (kernTable) {
+        tables.push(kernTable);
     }
 
     var sfntTable = makeSfntTable(tables);
